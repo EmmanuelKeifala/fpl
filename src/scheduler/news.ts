@@ -28,6 +28,11 @@ const FPL_NEWS_SOURCES = [
   { name: 'Fantasy Football Fix', url: 'https://www.fantasyfootballfix.com/fpl_injury_news' },
 ];
 
+// Rate limiting - track last API call
+let lastTwitterCall = 0;
+const TWITTER_MIN_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between Twitter calls (strict rate limit)
+const TWITTER_ENABLED = process.env.ENABLE_TWITTER === 'true' && process.env.TWITTER_BEARER_TOKEN;
+
 async function fetchWithTimeout(url: string, timeout = 5000): Promise<string> {
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), timeout);
@@ -47,12 +52,26 @@ async function fetchWithTimeout(url: string, timeout = 5000): Promise<string> {
 
 export async function checkTwitterNews(): Promise<NewsItem[]> {
   const news: NewsItem[] = [];
-  const bearerToken = process.env.TWITTER_BEARER_TOKEN;
   
+  // Check if Twitter is enabled
+  if (!TWITTER_ENABLED) {
+    return news;
+  }
+  
+  // Rate limiting - only check Twitter every 5 minutes max
+  const now = Date.now();
+  if (now - lastTwitterCall < TWITTER_MIN_INTERVAL_MS) {
+    console.log(`[NEWS] Twitter rate-limited. Last check ${Math.round((now - lastTwitterCall) / 1000)}s ago.`);
+    return news;
+  }
+  
+  const bearerToken = process.env.TWITTER_BEARER_TOKEN;
   if (!bearerToken) {
     console.log('[NEWS] Twitter API token not configured. Skipping Twitter.');
     return news;
   }
+  
+  lastTwitterCall = now;
   
   try {
     // Search for recent tweets from popular FPL accounts
