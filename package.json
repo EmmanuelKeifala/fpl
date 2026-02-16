@@ -13,20 +13,25 @@
     "db:migrate": "tsx src/db/migrate.ts",
     "test": "tsx --test src/**/*.test.ts"
   },
-  "keywords": ["fpl", "fantasy-premier-league", "ai-agent", "openai"],
+  "keywords": [
+    "fpl",
+    "fantasy-premier-league",
+    "ai-agent",
+    "openai"
+  ],
   "author": "",
   "license": "ISC",
   "dependencies": {
     "@openai/agents": "^0.4.4",
-    "better-sqlite3": "^12.6.2",
     "dotenv": "^17.2.3",
     "drizzle-orm": "^0.45.1",
+    "sql.js": "^1.14.0",
     "zod": "^4.3.6",
     "zustand": "^5.0.11"
   },
   "devDependencies": {
-    "@types/better-sqlite3": "^7.6.13",
     "@types/node": "^22.15.29",
+    "@types/sql.js": "^1.4.9",
     "drizzle-kit": "^0.31.4",
     "tsx": "^4.20.3",
     "typescript": "^5.8.3"

@@ -1,15 +1,12 @@
 // Database Migration Script
-// Note: Tables are auto-created in client.ts via raw SQL.
-// This script runs Drizzle Kit migrations for schema changes.
-import { migrate } from 'drizzle-orm/better-sqlite3/migrator';
-import { db } from './client.js';
+// Note: With sql.js, tables are auto-created in client.ts.
+// This script is kept for compatibility but is now a no-op.
 
-console.log('Running database migrations...');
+console.log('Database tables are auto-created by sql.js. No migration needed.');
 
-try {
-  migrate(db, { migrationsFolder: './drizzle' });
-  console.log('Migrations completed successfully.');
-} catch (error) {
-  console.error('Migration failed:', error);
-  process.exit(1);
-}
+// Export a dummy db for compatibility
+export const db = {
+  select: () => ({ from: () => ({}) }),
+  insert: () => ({ values: async () => [] }),
+  update: () => ({ set: () => ({ where: () => ({ execute: async () => {} }) }) }),
+};
