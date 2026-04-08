@@ -24,7 +24,7 @@
   "dependencies": {
     "@openai/agents": "^0.4.4",
     "dotenv": "^17.2.3",
-    "drizzle-orm": "^0.45.1",
+    "drizzle-orm": "^0.45.2",
     "sql.js": "^1.14.0",
     "zod": "^4.3.6",
     "zustand": "^5.0.11"
