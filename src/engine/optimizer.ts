@@ -1,6 +1,7 @@
 // Game Theory Optimization Engine
 import { getFPLClient } from '../api/client.js';
 import type { Player, Fixture, Team, Gameweek } from '../api/types.js';
+import { projectPlayerPoints } from '../strategy/projections.js';
 
 export interface ExpectedPoints {
   playerId: number;
@@ -15,6 +16,7 @@ export interface ExpectedPoints {
     fixtureFactor: number;
     minutesFactor: number;
     setpieceFactor: number;
+    defensiveContribution: number;
   };
 }
 
@@ -119,33 +121,46 @@ class OptimizationEngine {
       fixtureFactor = fdrSum / upcomingFixtures.length;
     }
     
-    // Base expected points from position and PPG
-    const baseXP = POSITION_BASE_XP[player.element_type] || 4.0;
-    const ppg = parseFloat(player.points_per_game) || baseXP;
-    
-    // Calculate next GW xP
-    const nextGWXP = ppg * formFactor * minutesFactor * setpieceFactor * 
-      (upcomingFixtures.length > 0 ? (FDR_WEIGHTS[this.getNextFDR(upcomingFixtures[0], player.team)] || 1.0) : 1.0);
-    
-    // Calculate next 5 GW xP
-    const next5GWXP = ppg * gameweeks * formFactor * minutesFactor * setpieceFactor * fixtureFactor;
-    
-    // Confidence based on data quality
-    const confidence = Math.min(1, (minutesFactor * 0.4 + (form > 0 ? 0.4 : 0) + 0.2));
+    const nextFixtures = this.getUpcomingFixtures(player.team, 1);
+    const expectedMinutes = Math.min(90, player.minutes / Math.max(1, this.currentGW));
+    const appearanceProbability = player.status === 'a'
+      ? ((player.chance_of_playing_next_round ?? 100) / 100)
+      : ((player.chance_of_playing_next_round ?? 0) / 100);
+    const toProjectionInput = (fixturesForProjection: Fixture[]) => ({
+      elementType: player.element_type,
+      expectedMinutes,
+      appearanceProbability,
+      expectedGoals: (player.expected_goals_per_90 || 0) * setpieceFactor,
+      expectedAssists: (player.expected_assists_per_90 || 0) * setpieceFactor,
+      cleanSheetProbability: player.element_type <= 3 ? Math.max(0, Math.min(1, 0.45 * fixtureFactor)) : 0,
+      expectedSaves: player.element_type === 1 ? (player.saves_per_90 || 0) : 0,
+      penaltySaveProbability: player.element_type === 1 ? 0.02 : 0,
+      penaltyMissProbability: 0.01,
+      yellowCardProbability: 0.12,
+      redCardProbability: 0.01,
+      ownGoalProbability: 0.005,
+      expectedGoalsConceded: player.expected_goals_conceded_per_90 || player.goals_conceded_per_90 || 1,
+      defensiveContributionProbability: player.element_type === 1 ? 0 : Math.min(0.8, 0.2 + minutesFactor * 0.3),
+      expectedBonus: Math.max(0, Math.min(1.5, form / 6)),
+      fixtures: fixturesForProjection.map(f => ({ difficulty: this.getNextFDR(f, player.team) })),
+    });
+    const projection = projectPlayerPoints(toProjectionInput(upcomingFixtures));
+    const nextProjection = projectPlayerPoints(toProjectionInput(nextFixtures));
     
     return {
       playerId: player.id,
       playerName: player.web_name,
       team: team?.short_name || 'UNK',
       position: positionName,
-      nextGW: Math.round(nextGWXP * 10) / 10,
-      next5GW: Math.round(next5GWXP * 10) / 10,
-      confidence,
+      nextGW: nextProjection.expectedPoints,
+      next5GW: projection.expectedPoints,
+      confidence: projection.confidence,
       breakdown: {
         formFactor: Math.round(formFactor * 100) / 100,
         fixtureFactor: Math.round(fixtureFactor * 100) / 100,
         minutesFactor: Math.round(minutesFactor * 100) / 100,
         setpieceFactor: Math.round(setpieceFactor * 100) / 100,
+        defensiveContribution: projection.breakdown.defensiveContribution,
       },
     };
   }
