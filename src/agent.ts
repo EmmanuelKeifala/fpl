@@ -17,35 +17,44 @@ import {
 const FPL_RULES_2025_26 = `
 ## FPL 2025/26 Season Rules
 
-### Transfers
-- 1 free transfer per gameweek
-- Can bank up to 5 free transfers (no longer reset by Wildcard/Free Hit)
-- Each extra transfer costs -4 points (a "hit")
-
 ### Squad Rules
-- 15 players total: 2 GK, 5 DEF, 5 MID, 3 FWD
-- Max 3 players from any single Premier League team
-- Starting XI must be valid formation (min 1 GK, 3 DEF, 2 MID, 1 FWD)
-- Budget: £100.0m at start
+- 15 players: 2 GKP, 5 DEF, 5 MID, 3 FWD
+- Max 3 players from a Premier League club
+- Initial budget: £100.0m
+- Starting XI must include 1 GKP, at least 3 DEF, at least 2 MID, and at least 1 FWD
+- Autosubs must preserve formation rules
 
-### Chips (Each can be used TWICE per season - once per half)
-- **Wildcard**: Unlimited free transfers for one gameweek
-- **Free Hit**: Temporary squad for one gameweek, then reverts
-- **Bench Boost**: Bench players score points for one gameweek
-- **Triple Captain**: Captain scores 3x points for one gameweek
+### Captaincy
+- Captain scores double
+- Vice-captain receives captaincy only if captain plays 0 minutes
+- If captain and vice-captain both play 0 minutes, no player score is doubled
 
-### Season Halves
-- First half: GW1-19
-- Second half: GW20-38
-- Each chip available once per half
+### Transfers
+- 1 free transfer per gameweek after the first deadline
+- Can bank up to 5 free transfers
+- Extra transfers cost -4 points each
+- Max 20 transfers in a gameweek unless using Wildcard or Free Hit
+- After the GW15 deadline and before GW16, free transfers top up to 5
+- Selling price keeps half of player price profit, rounded down to £0.1m
+- Wildcard and Free Hit retain saved free transfers for the following gameweek
 
-### Scoring
-- Goals: GK/DEF 6pts, MID 5pts, FWD 4pts
-- Assists: 3pts
-- Clean sheets: GK/DEF 4pts, MID 1pt
-- Bonus: 1-3pts based on BPS
-- Saves: 1pt per 3 saves
-- Penalties: Saved 5pts, Missed -2pts
+### Chips
+- Only one chip can be played per gameweek
+- Two Bench Boosts, two Triple Captains, two Free Hits, and two Wildcards are available across the season, split around the GW19 deadline
+- Bench Boost: bench points count
+- Triple Captain: captain scores triple instead of double
+- Free Hit: unlimited free transfers for one gameweek, squad reverts next deadline
+- Wildcard: all transfers in the gameweek are free
+
+### Scoring Highlights
+- Appearance: 1 point under 60 minutes, 2 points at 60+ minutes
+- Goals: GKP 10, DEF 6, MID 5, FWD 4
+- Assist: 3
+- Clean sheet: GKP/DEF 4, MID 1
+- Defensive contribution: DEF 2 points for 10+ CBI+tackles; MID/FWD 2 points for 12+ CBI+tackles+recoveries
+- Saves: 1 per 3 saves
+- Penalty save: 5; penalty miss: -2
+- Yellow: -1; red: -3; own goal: -2
 `;
 
 const GAME_THEORY_INSTRUCTIONS = `
@@ -136,4 +145,3 @@ When users ask about their team, proactively suggest improvements if you see obv
 });
 
 export default fplAgent;
-

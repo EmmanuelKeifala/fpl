@@ -44,6 +44,12 @@ Ask the agent questions like:
 
 ## FPL Rules (2025/26)
 
+- Squad: 15 players, 2 GKP / 5 DEF / 5 MID / 3 FWD
+- Starting XI: 1 GKP, at least 3 DEF, at least 2 MID, at least 1 FWD
 - Save up to 5 free transfers
-- Chips can be used twice per season (once per half)
-- -4 points per hit beyond free transfers
+- -4 points per transfer beyond available free transfers
+- Max 20 transfers in a GW unless using Wildcard or Free Hit
+- Chips are split around the GW19 deadline: 2 Bench Boosts, 2 Triple Captains, 2 Free Hits, 2 Wildcards
+- Only one chip can be played per GW
+- Defensive contribution points are included in projections
+- Price selling keeps half of profit rounded down to £0.1m
