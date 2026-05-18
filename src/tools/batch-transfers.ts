@@ -44,12 +44,14 @@ export const batchTransfersTool = tool({
     
     // Build current squad state
     const currentSquad = new Map<number, number>(); // playerId -> teamId
+    const sellingPrices = new Map<number, number>();
     const squadByTeam = new Map<number, Set<number>>(); // teamId -> playerIds
     
     myTeam.picks.forEach(pick => {
       const player = engine.getPlayer(pick.element);
       if (player) {
         currentSquad.set(pick.element, player.team);
+        sellingPrices.set(pick.element, pick.selling_price ?? player.now_cost);
         const teamPlayers = squadByTeam.get(player.team) || new Set();
         teamPlayers.add(pick.element);
         squadByTeam.set(player.team, teamPlayers);
@@ -90,6 +92,16 @@ export const batchTransfersTool = tool({
         continue;
       }
       
+      if (outPlayer.id === inPlayer.id) {
+        errors.push(`Transfer ${i + 1}: Cannot transfer ${outPlayer.web_name} to himself`);
+        continue;
+      }
+      
+      if (currentSquad.has(inPlayer.id)) {
+        errors.push(`Transfer ${i + 1}: ${inPlayer.web_name} is already in your squad`);
+        continue;
+      }
+      
       // Check position match
       if (outPlayer.element_type !== inPlayer.element_type) {
         errors.push(`Transfer ${i + 1}: ${outPlayer.web_name} and ${inPlayer.web_name} are different positions`);
@@ -109,7 +121,7 @@ export const batchTransfersTool = tool({
       }
       
       // Check budget
-      const priceChange = outPlayer.now_cost - inPlayer.now_cost;
+      const priceChange = (sellingPrices.get(outPlayer.id) ?? outPlayer.now_cost) - inPlayer.now_cost;
       if (bank + priceChange < 0) {
         errors.push(`Transfer ${i + 1}: Insufficient funds to buy ${inPlayer.web_name}`);
         continue;
@@ -123,6 +135,8 @@ export const batchTransfersTool = tool({
       // Update state for next transfer validation
       currentSquad.delete(outPlayer.id);
       currentSquad.set(inPlayer.id, inPlayer.team);
+      sellingPrices.delete(outPlayer.id);
+      sellingPrices.set(inPlayer.id, inPlayer.now_cost);
       
       const outTeamPlayers = squadByTeam.get(outPlayerTeam);
       if (outTeamPlayers) {
@@ -219,10 +233,10 @@ export const batchTransfersTool = tool({
     });
     
     return {
-      status: 'LOGGED',
-      message: `${validatedTransfers.length} transfers analyzed and logged. Execute on FPL website to confirm.`,
+      status: 'MANUAL_REQUIRED',
+      message: `${validatedTransfers.length} transfers analyzed and logged. They were not executed automatically; execute them on the FPL website to confirm.`,
       ...analysis,
-      note: 'Batch transfers via API require authenticated session. Please confirm on FPL website.',
+      note: 'Automatic batch transfer execution requires a verified FPL transfer payload and is disabled for safety.',
     };
   },
 });

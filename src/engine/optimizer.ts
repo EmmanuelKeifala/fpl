@@ -309,14 +309,15 @@ class OptimizationEngine {
 
   // Helper methods
   getUpcomingFixtures(teamId: number, count: number): Fixture[] {
+    const maxEvent = this.currentGW + count - 1;
     return this.fixtures
       .filter(f => 
         f.event !== null && 
         f.event >= this.currentGW && 
+        f.event <= maxEvent &&
         (f.team_h === teamId || f.team_a === teamId)
       )
-      .sort((a, b) => (a.event || 0) - (b.event || 0))
-      .slice(0, count);
+      .sort((a, b) => (a.event || 0) - (b.event || 0) || (a.kickoff_time || '').localeCompare(b.kickoff_time || '') || a.id - b.id);
   }
 
   private getNextFDR(fixture: Fixture, teamId: number): number {
@@ -705,4 +706,3 @@ export function resetOptimizationEngine(): void {
 }
 
 export { OptimizationEngine };
-

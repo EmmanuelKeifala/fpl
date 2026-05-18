@@ -3,7 +3,6 @@ import { z } from 'zod';
 import { tool } from '@openai/agents';
 import { getFPLClient } from '../api/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
-import { logDecision } from '../db/client.js';
 
 export const playChipTool = tool({
   name: 'play_chip',
@@ -148,40 +147,10 @@ export const playChipTool = tool({
       };
     }
     
-    // Activate chip
-    const chipApiName = chip === 'bboost' ? 'bboost' : chip === '3xc' ? '3xc' : chip;
-    const result = await client.playChip(
-      chipApiName as 'wildcard' | 'freehit' | 'bboost' | '3xc',
-      currentGW
-    );
-    
-    if (result.success) {
-      // Log decision to database
-      await logDecision({
-        gameweek: currentGW,
-        decisionType: 'chip',
-        action: JSON.stringify({
-          chip: chipNames[chip],
-          gameweek: currentGW,
-        }),
-        reasoning: evaluation.reasoning,
-        expectedPoints: evaluation.expectedGain,
-        rankBefore: null,
-        hitsTaken: 0,
-      });
-      
-      return {
-        status: 'SUCCESS',
-        message: `${chipNames[chip]} activated for Gameweek ${currentGW}!`,
-        ...analysis,
-        logged: true,
-      };
-    } else {
-      return {
-        status: 'FAILED',
-        message: result.message,
-        ...analysis,
-      };
-    }
+    return {
+      status: 'MANUAL_REQUIRED',
+      message: `${chipNames[chip]} was not activated automatically. Activate it manually on the FPL website after reviewing this analysis.`,
+      ...analysis,
+    };
   },
 });

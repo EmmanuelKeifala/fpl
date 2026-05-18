@@ -136,7 +136,7 @@ export const setCaptainTool = tool({
       };
     }
     
-    // Execute captain change via API
+    // Confirmed captain changes are logged for tracking; automatic FPL mutation is disabled until verified.
     const managerId = client.getManagerId();
     if (!managerId) {
       return {
@@ -145,18 +145,6 @@ export const setCaptainTool = tool({
     }
     
     try {
-      // Build new picks array with updated captain/VC
-      const newPicks = myTeam.picks.map(pick => ({
-        element: pick.element,
-        position: pick.position,
-        is_captain: pick.element === captainPlayer.id,
-        is_vice_captain: viceCaptainPlayer 
-          ? pick.element === viceCaptainPlayer.id
-          : pick.element === currentVCPick?.element && pick.element !== captainPlayer.id,
-      }));
-      
-      // Note: FPL API requires a specific format for updating picks
-      // This is a simplified version - actual implementation may need adjustment
       const currentGW = engine.getCurrentGameweek();
       
       // Log the decision
@@ -175,10 +163,10 @@ export const setCaptainTool = tool({
       });
       
       return {
-        status: 'SUCCESS',
-        message: `Captain set to ${captainPlayer.web_name}${viceCaptainPlayer ? `, Vice-Captain set to ${viceCaptainPlayer.web_name}` : ''}`,
+        status: 'MANUAL_REQUIRED',
+        message: `Captain change was logged but not submitted to FPL. Set ${captainPlayer.web_name}${viceCaptainPlayer ? ` and vice-captain ${viceCaptainPlayer.web_name}` : ''} manually on the FPL website.`,
         ...analysis,
-        note: 'Captain change logged. Actual API update may require manual confirmation on FPL website.',
+        note: 'Automatic captain updates require a verified FPL team-update payload and are disabled for safety.',
       };
     } catch (error) {
       return {

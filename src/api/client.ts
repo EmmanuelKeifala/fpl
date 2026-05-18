@@ -217,7 +217,9 @@ class FPLClient {
   async makeTransfer(
     playerOut: number,
     playerIn: number,
-    gameweek: number
+    gameweek: number,
+    purchasePrice: number,
+    sellingPrice: number
   ): Promise<{ success: boolean; message: string }> {
     if (!this.managerId) {
       throw new Error('Manager ID required');
@@ -235,8 +237,8 @@ class FPLClient {
             {
               element_in: playerIn,
               element_out: playerOut,
-              purchase_price: 0, // Will be validated by FPL
-              selling_price: 0,
+              purchase_price: purchasePrice,
+              selling_price: sellingPrice,
             },
           ],
           wildcard: false,
@@ -257,19 +259,10 @@ class FPLClient {
       throw new Error('Manager ID required');
     }
 
-    try {
-      await this.fetch(`/my-team/${this.managerId}/`, {
-        method: 'POST',
-        requiresAuth: true,
-        body: {
-          chip: chipName,
-          event: gameweek,
-        },
-      });
-      return { success: true, message: `${chipName} chip activated for GW${gameweek}` };
-    } catch (error) {
-      return { success: false, message: error instanceof Error ? error.message : 'Chip activation failed' };
-    }
+    return {
+      success: false,
+      message: `Automatic ${chipName} activation for GW${gameweek} is not implemented safely. Activate the chip manually on the FPL website.`,
+    };
   }
 
   // Helper Methods

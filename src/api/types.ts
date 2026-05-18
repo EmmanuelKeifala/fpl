@@ -366,6 +366,8 @@ export interface Pick {
   multiplier: number;  // 0=benched, 1=playing, 2=captain, 3=triple captain
   is_captain: boolean;
   is_vice_captain: boolean;
+  purchase_price?: number;
+  selling_price?: number;
 }
 
 // My Team (Authenticated)

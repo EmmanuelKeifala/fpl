@@ -8,7 +8,65 @@ import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const DB_PATH = join(__dirname, '../../data/fpl.db');
+const DB_PATH = process.env.FPL_DB_PATH || join(__dirname, '../../data/fpl.db');
+
+const decisionColumns = {
+  id: 'id',
+  gameweek: 'gameweek',
+  decisionType: 'decision_type',
+  action: 'action',
+  reasoning: 'reasoning',
+  expectedPoints: 'expected_points',
+  actualPoints: 'actual_points',
+  rankBefore: 'rank_before',
+  rankAfter: 'rank_after',
+  hitsTaken: 'hits_taken',
+  createdAt: 'created_at',
+} as const;
+
+const snapshotColumns = {
+  id: 'id',
+  gameweek: 'gameweek',
+  totalPoints: 'total_points',
+  overallRank: 'overall_rank',
+  gameweekPoints: 'gameweek_points',
+  gameweekRank: 'gameweek_rank',
+  teamValue: 'team_value',
+  bank: 'bank',
+  chipsUsed: 'chips_used',
+  transfersMade: 'transfers_made',
+  transfersCost: 'transfers_cost',
+  pointsOnBench: 'points_on_bench',
+  captainId: 'captain_id',
+  captainPoints: 'captain_points',
+  createdAt: 'created_at',
+} as const;
+
+function toDbRow(
+  values: Record<string, unknown>,
+  columns: Record<string, string>
+): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(values)
+      .filter(([, value]) => value !== undefined)
+      .map(([key, value]) => [columns[key] ?? key, value])
+  );
+}
+
+function fromDbRow(
+  columns: string[],
+  row: unknown[],
+  columnMap: Record<string, string>
+): Record<string, unknown> {
+  const reverseMap = Object.fromEntries(
+    Object.entries(columnMap).map(([camel, snake]) => [snake, camel])
+  );
+  const obj: Record<string, unknown> = {};
+  columns.forEach((col: string, i: number) => {
+    obj[reverseMap[col] ?? col] = row[i];
+  });
+  return obj;
+}
 
 // Ensure data directory exists
 try {
@@ -100,14 +158,15 @@ export async function logDecision(decision: NewDecision): Promise<Decision> {
     (values as Record<string, unknown>).createdAt = values.createdAt.getTime();
   }
   
-  const cols = Object.keys(values).join(', ');
-  const placeholders = Object.keys(values).map(() => '?').join(', ');
-  const vals = Object.values(values);
+  const dbValues = toDbRow(values as Record<string, unknown>, decisionColumns);
+  const cols = Object.keys(dbValues).join(', ');
+  const placeholders = Object.keys(dbValues).map(() => '?').join(', ');
+  const vals = Object.values(dbValues);
   
   db.run(`INSERT INTO decisions (${cols}) VALUES (${placeholders})`, vals as (string | number | null)[]);
   saveDatabase();
   
-  const result = db.exec('SELECT last_insert_rowid() as id');
+  const result = db.exec('SELECT id FROM decisions ORDER BY id DESC LIMIT 1');
   const id = result[0]?.values[0]?.[0] as number;
   
   return { ...decision, id } as Decision;
@@ -141,13 +200,9 @@ export async function getDecisions(gameweek?: number): Promise<Decision[]> {
   const result = db.exec(sql, params);
   if (!result[0]) return [];
   
-  return result[0].values.map((row: unknown[]) => {
-    const obj: Record<string, unknown> = {};
-    result[0].columns.forEach((col: string, i: number) => {
-      obj[col] = row[i];
-    });
-    return obj as unknown as Decision;
-  });
+  return result[0].values.map((row: unknown[]) =>
+    fromDbRow(result[0].columns, row, decisionColumns) as unknown as Decision
+  );
 }
 
 export async function getDecisionsByType(type: string): Promise<Decision[]> {
@@ -159,13 +214,9 @@ export async function getDecisionsByType(type: string): Promise<Decision[]> {
   
   if (!result[0]) return [];
   
-  return result[0].values.map((row: unknown[]) => {
-    const obj: Record<string, unknown> = {};
-    result[0].columns.forEach((col: string, i: number) => {
-      obj[col] = row[i];
-    });
-    return obj as unknown as Decision;
-  });
+  return result[0].values.map((row: unknown[]) =>
+    fromDbRow(result[0].columns, row, decisionColumns) as unknown as Decision
+  );
 }
 
 // Gameweek Snapshot CRUD
@@ -183,17 +234,19 @@ export async function saveGameweekSnapshot(snapshot: NewGameweekSnapshot): Promi
   
   if (existing[0]?.values?.length > 0) {
     // Update
-    const setClause = Object.keys(values)
-      .filter(k => k !== 'id')
-      .map(k => `${k} = ?`)
+    const dbValues = toDbRow(values as Record<string, unknown>, snapshotColumns);
+    const entries = Object.entries(dbValues).filter(([k]) => k !== 'id' && k !== 'gameweek');
+    const setClause = entries
+      .map(([k]) => `${k} = ?`)
       .join(', ');
-    const vals = Object.values(values).filter(v => v !== undefined) as (string | number | null)[];
-    db.run(`UPDATE gameweek_snapshots SET ${setClause} WHERE gameweek = ?`, vals);
+    const vals = entries.map(([, value]) => value) as (string | number | null)[];
+    db.run(`UPDATE gameweek_snapshots SET ${setClause} WHERE gameweek = ?`, [...vals, snapshot.gameweek]);
   } else {
     // Insert
-    const cols = Object.keys(values).join(', ');
-    const placeholders = Object.keys(values).map(() => '?').join(', ');
-    db.run(`INSERT INTO gameweek_snapshots (${cols}) VALUES (${placeholders})`, Object.values(values) as (string | number | null)[]);
+    const dbValues = toDbRow(values as Record<string, unknown>, snapshotColumns);
+    const cols = Object.keys(dbValues).join(', ');
+    const placeholders = Object.keys(dbValues).map(() => '?').join(', ');
+    db.run(`INSERT INTO gameweek_snapshots (${cols}) VALUES (${placeholders})`, Object.values(dbValues) as (string | number | null)[]);
   }
   
   saveDatabase();
@@ -207,11 +260,7 @@ export async function getGameweekSnapshot(gameweek: number): Promise<GameweekSna
   if (!result[0] || !result[0].values[0]) return undefined;
   
   const row = result[0].values[0];
-  const obj: Record<string, unknown> = {};
-  result[0].columns.forEach((col: string, i: number) => {
-    obj[col] = row[i];
-  });
-  return obj as unknown as GameweekSnapshot;
+  return fromDbRow(result[0].columns, row, snapshotColumns) as unknown as GameweekSnapshot;
 }
 
 export async function getRecentSnapshots(limit = 10): Promise<GameweekSnapshot[]> {
@@ -220,13 +269,9 @@ export async function getRecentSnapshots(limit = 10): Promise<GameweekSnapshot[]
   
   if (!result[0]) return [];
   
-  return result[0].values.map((row: unknown[]) => {
-    const obj: Record<string, unknown> = {};
-    result[0].columns.forEach((col: string, i: number) => {
-      obj[col] = row[i];
-    });
-    return obj as unknown as GameweekSnapshot;
-  });
+  return result[0].values.map((row: unknown[]) =>
+    fromDbRow(result[0].columns, row, snapshotColumns) as unknown as GameweekSnapshot
+  );
 }
 
 // Performance Analytics
@@ -249,13 +294,9 @@ export async function getPerformanceStats(fromGW?: number, toGW?: number): Promi
       `SELECT * FROM decisions WHERE gameweek >= ${fromGW} AND gameweek <= ${toGW}`
     );
     if (result[0]) {
-      decisions = result[0].values.map((row: unknown[]) => {
-        const obj: Record<string, unknown> = {};
-        result[0].columns.forEach((col: string, i: number) => {
-          obj[col] = row[i];
-        });
-        return obj as unknown as Decision;
-      });
+      decisions = result[0].values.map((row: unknown[]) =>
+        fromDbRow(result[0].columns, row, decisionColumns) as unknown as Decision
+      );
     }
   } else {
     decisions = await getDecisions();

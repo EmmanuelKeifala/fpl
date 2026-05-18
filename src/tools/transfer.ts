@@ -69,6 +69,7 @@ export const makeTransferTool = tool({
             error: `${outPlayer.web_name} is not in your current squad.`,
           };
         }
+        sellingPrice = pick.selling_price ?? outPlayer.now_cost;
         
         // Build squad by team for limit check
         myTeam.picks.forEach(p => {
@@ -188,7 +189,7 @@ export const makeTransferTool = tool({
     }
     
     const currentGW = engine.getCurrentGameweek();
-    const result = await client.makeTransfer(outPlayer.id, inPlayer.id, currentGW);
+    const result = await client.makeTransfer(outPlayer.id, inPlayer.id, currentGW, buyingPrice, sellingPrice);
     
     if (result.success) {
       // Log decision to database

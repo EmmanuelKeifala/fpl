@@ -15,7 +15,8 @@ import {
   checkEmergencyStop, 
   validateTransfer, 
   validateChip, 
-  resetWeeklyTransfers 
+  resetWeeklyTransfers,
+  recordTransfer 
 } from './limits.js';
 import { 
   notify, 
@@ -46,6 +47,8 @@ let runnerState: RunnerState = {
   cycleCount: 0,
   lastGWProcessed: 0,
 };
+
+let cycleInProgress = false;
 
 function getPhase(hoursToDeadline: number, isPostDeadline: boolean): RunnerPhase {
   if (isPostDeadline) return 'post-deadline';
@@ -221,10 +224,13 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
         const result = await client.makeTransfer(
           bestTransfer.playerOut.id, 
           bestTransfer.playerIn.id, 
-          context.gameweek
+          context.gameweek,
+          bestTransfer.playerIn.now_cost,
+          bestTransfer.sellingPrice
         );
         
         if (result.success) {
+          recordTransfer();
           await notifyTransfer(
             bestTransfer.playerOut,
             bestTransfer.playerIn,
@@ -413,6 +419,20 @@ async function runCycle(): Promise<void> {
   console.log(`\n[CYCLE] Completed in ${duration.toFixed(1)}s`);
 }
 
+async function safeRunCycle(): Promise<void> {
+  if (cycleInProgress) {
+    console.log('[CYCLE] Previous cycle still running, skipping this tick.');
+    return;
+  }
+
+  cycleInProgress = true;
+  try {
+    await runCycle();
+  } finally {
+    cycleInProgress = false;
+  }
+}
+
 async function main(): Promise<void> {
   const initialized = await initialize();
   
@@ -424,11 +444,11 @@ async function main(): Promise<void> {
   console.log('[MAIN] Starting polling loop...\n');
   
   // Run initial cycle
-  await runCycle();
+  await safeRunCycle();
   
   // Set up polling loop
   const intervalId = setInterval(async () => {
-    await runCycle();
+    await safeRunCycle();
   }, POLL_INTERVAL);
   
   // Handle graceful shutdown

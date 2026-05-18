@@ -16,6 +16,7 @@ export interface TransferCandidate {
   confidence: number;
   reasoning: string;
   priceRisk: 'rising' | 'falling' | 'stable';
+  sellingPrice: number;
 }
 
 export interface TeamHealth {
@@ -167,6 +168,7 @@ export async function findBestTransfers(
   const engine = await getOptimizationEngine();
   const freeTransfers = myTeam.transfers.limit - myTeam.transfers.made;
   const bank = myTeam.transfers.bank;
+  const sellingPrices = new Map(myTeam.picks.map(p => [p.element, p.selling_price]));
   
   const candidates: TransferCandidate[] = [];
   const squadPlayerIds = myTeam.picks.map(p => p.element);
@@ -198,7 +200,8 @@ export async function findBestTransfers(
   
   // For each sell candidate, find best replacement
   for (const playerOut of sellCandidates) {
-    const maxPrice = playerOut.now_cost + bank;
+    const sellingPrice = sellingPrices.get(playerOut.id) ?? playerOut.now_cost;
+    const maxPrice = sellingPrice + bank;
     const position = playerOut.element_type;
     
     // Get all available players in same position
@@ -242,6 +245,7 @@ export async function findBestTransfers(
             : replacement.priceChange.prediction === 'fall'
               ? 'falling'
               : 'stable',
+          sellingPrice,
         });
       }
     }
@@ -359,29 +363,8 @@ export async function buildDecisionContext(): Promise<DecisionContext | null> {
   }
   
   if (!myTeam) {
-    console.log('[DECISION] Using fallback team data from bootstrap');
-    // Fall back to public endpoint data - create minimal MyTeam from bootstrap
-    const allPlayers = engine.getAllPlayers();
-    const picks = allPlayers.slice(0, 15).map((p, i) => ({
-      element: p.id,
-      position: i + 1,
-      multiplier: i === 0 ? 2 : 1, // First player is captain
-      is_captain: i === 0,
-      is_vice_captain: i === 1,
-    }));
-    
-    myTeam = {
-      picks,
-      chips: [],
-      transfers: {
-        cost: 0,
-        status: 'ok',
-        limit: 1,
-        made: 0,
-        bank: 10, // Default 1.0m in bank
-        value: 1000, // Default 100.0m team value
-      },
-    };
+    console.log('[DECISION] Failed to get authenticated team data; skipping executable cycle');
+    return null;
   }
   
   // Use real deadline from optimizer
