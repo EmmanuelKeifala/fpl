@@ -56,6 +56,16 @@ test('validateSnapshot rejects duplicate player ids and missing results', () => 
   assert.ok(result.errors.includes('Missing actual result for player id 2'));
 });
 
+test('validateSnapshot rejects whitespace-only provenance source URLs', () => {
+  const snapshot = validSnapshot();
+  snapshot.provenance.sourceUrls = ['   '];
+
+  const result = validateSnapshot(snapshot);
+
+  assert.equal(result.valid, false);
+  assert.ok(result.errors.includes('Provenance source URL at index 0 is required'));
+});
+
 test('FileSnapshotStore loads snapshots without exposing actual results through decision input', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'fpl-backtest-'));
   try {

@@ -36,6 +36,9 @@ export function validateSnapshot(snapshot: GameweekSnapshot): ValidationResult {
   }
 
   if (snapshot.provenance.sourceUrls.length === 0) errors.push('At least one provenance source URL is required');
+  for (const [index, sourceUrl] of snapshot.provenance.sourceUrls.entries()) {
+    if (!sourceUrl.trim()) errors.push(`Provenance source URL at index ${index} is required`);
+  }
   if (!snapshot.provenance.snapshotVersion) errors.push('Snapshot version is required');
 
   return { valid: errors.length === 0, errors };
