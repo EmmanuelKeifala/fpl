@@ -47,6 +47,7 @@ coverage/
 tmp/
 temp/
 *.tmp
+.worktrees/
 
 # FPL specific (generated data)
 fpl-cache/
