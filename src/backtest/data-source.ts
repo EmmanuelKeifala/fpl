@@ -1,11 +1,17 @@
-import { access, mkdir, writeFile } from 'node:fs/promises';
+import { access, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+
+const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
+
+type FetchImpl = (url: string, init?: RequestInit) => Promise<Response>;
 
 export interface BacktestDataSourceOptions {
   season: string;
   cacheDir: string;
   sourceUrls: string[];
   fetchJson?: (url: string) => Promise<unknown>;
+  fetchImpl?: FetchImpl;
+  fetchTimeoutMs?: number;
   now?: () => Date;
 }
 
@@ -26,7 +32,8 @@ export class BacktestDataSource {
 
   constructor(private readonly options: BacktestDataSourceOptions) {
     this.fetchJson = options.fetchJson ?? (async (url: string) => {
-      const response = await fetch(url);
+      const fetchImpl = options.fetchImpl ?? fetch;
+      const response = await fetchImpl(url, { signal: AbortSignal.timeout(options.fetchTimeoutMs ?? DEFAULT_FETCH_TIMEOUT_MS) });
       if (!response.ok) throw new Error(`Failed to fetch ${url}: ${response.status} ${response.statusText}`);
       return response.json();
     });
@@ -35,6 +42,7 @@ export class BacktestDataSource {
 
   async prepare(): Promise<void> {
     await mkdir(this.options.cacheDir, { recursive: true });
+    await this.removeManifest();
 
     for (const [index, sourceUrl] of this.options.sourceUrls.entries()) {
       const data = await this.fetchJson(sourceUrl);
@@ -61,6 +69,14 @@ export class BacktestDataSource {
       return true;
     } catch {
       return false;
+    }
+  }
+
+  private async removeManifest(): Promise<void> {
+    try {
+      await unlink(join(this.options.cacheDir, 'manifest.json'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }
   }
 }
