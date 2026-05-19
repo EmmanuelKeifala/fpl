@@ -36,7 +36,17 @@ export function applyGameweekDecision(
 
   const playersById = new Map(snapshot.knownBeforeDeadline.players.map(player => [player.id, player]));
   const resultsByPlayerId = new Map(snapshot.actualResults.playerResults.map(result => [result.playerId, result]));
-  const baseSquad = decision.squad ? createSquadFromIds(decision.squad, playersById) : state.squad;
+
+  if (decision.squad && state.squad.length > 0) {
+    throw new Error('Decision squad can only be provided for initial squad creation');
+  }
+
+  if (decision.transfers.length > FPL_RULES.maxTransfersPerGameweek && decision.chip !== 'wildcard' && decision.chip !== 'freehit') {
+    throw new Error(`Decision has more than ${FPL_RULES.maxTransfersPerGameweek} transfers`);
+  }
+
+  const refreshedStateSquad = state.squad.map(pick => refreshSellingPrice(pick, playersById));
+  const baseSquad = decision.squad ? createSquadFromIds(decision.squad, playersById) : refreshedStateSquad;
   const baseBank = decision.squad
     ? FPL_RULES.initialBudget - baseSquad.reduce((total, pick) => total + pick.purchasePrice, 0)
     : state.bank;
@@ -75,7 +85,7 @@ export function applyGameweekDecision(
     squadValue: calculateSquadValue(squad, bank, playersById),
     bank,
   };
-  const persistedSquad = decision.chip === 'freehit' ? state.squad : squad;
+  const persistedSquad = decision.chip === 'freehit' ? refreshedStateSquad : squad;
   const persistedBank = decision.chip === 'freehit' ? state.bank : bank;
   const transfersForFreeTransferCarryover = decision.chip === 'wildcard' || decision.chip === 'freehit'
     ? 0

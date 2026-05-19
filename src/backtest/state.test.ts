@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
+import { FPL_RULES } from '../strategy/rules.js';
 import { createInitialState, applyGameweekDecision } from './state.js';
 import type { BacktestDecision, BacktestPlayer, GameweekSnapshot } from './types.js';
 
@@ -115,6 +116,46 @@ test('applyGameweekDecision rejects gameweek and snapshot mismatches', () => {
   assert.throws(() => applyGameweekDecision(createInitialState('2024-2025'), validDecision(), snapshot(2)), /snapshot gameweek/i);
 });
 
+test('applyGameweekDecision rejects squad reset after initial squad creation', () => {
+  const afterGw1 = stateAfterGw1();
+
+  assert.throws(() => applyGameweekDecision(afterGw1, validDecision({
+    gameweek: 2,
+    squad: LEGAL_SQUAD,
+  }), snapshot(2)), /squad.*initial/i);
+});
+
+test('applyGameweekDecision enforces max transfers unless wildcard or freehit is active', () => {
+  const afterGw1 = stateAfterGw1();
+  const transfers = Array.from({ length: FPL_RULES.maxTransfersPerGameweek + 1 }, (_, index) => ({
+    out: index % 2 === 0 ? 12 : 16,
+    in: index % 2 === 0 ? 16 : 12,
+  }));
+  const decision = validDecision({
+    gameweek: 2,
+    squad: undefined,
+    transfers,
+    startingXi: [1, 3, 4, 5, 16, 8, 9, 10, 13, 14, 15],
+    bench: [2, 6, 7, 11],
+    captain: 16,
+    viceCaptain: 13,
+  });
+
+  assert.throws(
+    () => applyGameweekDecision(afterGw1, decision, snapshot(2)),
+    new RegExp(`more than.*${FPL_RULES.maxTransfersPerGameweek} transfers`, 'i'),
+  );
+
+  const wildcard = applyGameweekDecision(afterGw1, { ...decision, chip: 'wildcard' }, snapshot(2));
+  const freehit = applyGameweekDecision(afterGw1, { ...decision, chip: 'freehit' }, snapshot(2));
+
+  assert.deepEqual(
+    wildcard.squad.map(pick => pick.playerId).sort((a, b) => a - b),
+    [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 13, 14, 15, 16],
+  );
+  assert.deepEqual(freehit.squad.map(pick => pick.playerId), LEGAL_SQUAD);
+});
+
 test('applyGameweekDecision waives transfer hits for wildcard and freehit', () => {
   const afterGw1 = stateAfterGw1();
   const transferDecision = {
@@ -151,6 +192,27 @@ test('applyGameweekDecision scores free hit squad but restores original squad an
   assert.equal(next.bank, 80);
   assert.equal(next.weeklyResults[1].grossPoints, 76);
   assert.equal(next.weeklyResults[1].squadValue, 1000);
+});
+
+test('applyGameweekDecision refreshes restored free hit squad selling prices', () => {
+  const afterGw1 = stateAfterGw1();
+  const gw2 = snapshot(2);
+  gw2.knownBeforeDeadline.players = gw2.knownBeforeDeadline.players.map(candidate => candidate.id === 8
+    ? { ...candidate, price: 97 }
+    : candidate);
+
+  const next = applyGameweekDecision(afterGw1, validDecision({
+    gameweek: 2,
+    squad: undefined,
+    transfers: [{ out: 12, in: 16 }],
+    startingXi: [1, 3, 4, 5, 16, 8, 9, 10, 13, 14, 15],
+    bench: [2, 6, 7, 11],
+    captain: 16,
+    viceCaptain: 13,
+    chip: 'freehit',
+  }), gw2);
+
+  assert.equal(next.squad.find(pick => pick.playerId === 8)?.sellingPrice, 96);
 });
 
 test('applyGameweekDecision does not consume saved transfers for wildcard and freehit', () => {
