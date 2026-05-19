@@ -15,7 +15,7 @@ export interface NormalizeVaastavSnapshotsOptions {
 
 const GW_COLUMNS = ['element', 'name', 'position', 'team', 'value', 'xP', 'minutes', 'total_points', 'round', 'kickoff_time'];
 const FIXTURE_COLUMNS = ['id', 'event', 'kickoff_time', 'team_h', 'team_a', 'team_h_difficulty', 'team_a_difficulty'];
-const XP_COLUMNS = ['element', 'xP'];
+const XP_COLUMNS = ['xP'];
 
 const POSITION_BY_NAME: Record<string, number> = {
   GK: 1,
@@ -42,8 +42,9 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
   for (const gameweek of options.gameweeks) {
     const gwFileName = `gw-raw-${gameweek}.csv`;
     const gwRows = await readRequiredCsv(join(options.cacheDir, gwFileName), gwFileName, GW_COLUMNS);
-    const xpRows = await readOptionalCsv(join(options.cacheDir, `xp-raw-${gameweek}.csv`), `xp-raw-${gameweek}.csv`, XP_COLUMNS);
-    const xpByElement = new Map(xpRows.map(row => [parseNumber(row.element, 'element'), parseNumber(row.xP, 'xP')]));
+    const xpFileName = `xp-raw-${gameweek}.csv`;
+    const xpRows = await readOptionalCsv(join(options.cacheDir, xpFileName), xpFileName, XP_COLUMNS);
+    const xpByElement = buildXpByElement(xpRows, xpFileName);
     const fixtures = fixturesByGameweek.get(gameweek) ?? [];
 
     if (fixtures.length === 0) throw new Error(`Missing fixture rows for GW${gameweek}`);
@@ -67,6 +68,16 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
     await writeFile(temp, `${JSON.stringify(snapshot, null, 2)}\n`);
     await rename(temp, target);
   }
+}
+
+function buildXpByElement(rows: CsvRow[], label: string): Map<number, number> {
+  const xpByElement = new Map<number, number>();
+  for (const row of rows) {
+    const playerId = row.element ?? row.id;
+    if (playerId === undefined) throw new Error(`${label} is missing required columns: element or id`);
+    xpByElement.set(parseNumber(playerId, row.element === undefined ? 'id' : 'element'), parseNumber(row.xP, 'xP'));
+  }
+  return xpByElement;
 }
 
 async function readRequiredCsv(path: string, label: string, requiredColumns: string[]): Promise<CsvRow[]> {

@@ -1,3 +1,5 @@
+import { unlink } from 'node:fs/promises';
+import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { FPL_RULES, POSITION_BY_ELEMENT_TYPE, type PositionKey } from '../strategy/rules.js';
 import { BacktestDataSource, getDefaultBacktestCacheDir, type BacktestSourceDescriptor } from './data-source.js';
@@ -6,6 +8,14 @@ import { normalizeVaastavSnapshots } from './normalizer.js';
 import { buildBacktestReport, formatBacktestSummary } from './report.js';
 import { FileSnapshotStore } from './snapshots.js';
 import type { BacktestPlayer, BacktestStrategy } from './types.js';
+
+interface PrepareDataDependencies {
+  preparedCacheDir?: string;
+  dataSource?: Pick<BacktestDataSource, 'prepare'>;
+  normalizeSnapshots?: typeof normalizeVaastavSnapshots;
+  now?: () => Date;
+  log?: (message: string) => void;
+}
 
 const SEASON = '2024-2025';
 const VAASTAV_BASE = 'https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2024-25';
@@ -43,25 +53,44 @@ export function formatPrepareDataMessage(preparedCacheDir: string): string {
 }
 
 export async function prepareData(): Promise<void> {
-  const preparedCacheDir = cacheDir();
-  const downloadedAt = new Date().toISOString();
-  const dataSource = new BacktestDataSource({
-    season: SEASON,
-    cacheDir: preparedCacheDir,
-    sourceUrls: SOURCE_URLS,
-    sources: SOURCE_DESCRIPTORS,
-    now: () => new Date(downloadedAt),
-  });
+  await prepareDataWithDependencies();
+}
+
+export async function prepareDataWithDependencies(dependencies: PrepareDataDependencies = {}): Promise<void> {
+  const preparedCacheDir = dependencies.preparedCacheDir ?? cacheDir();
+  const downloadedAt = (dependencies.now?.() ?? new Date()).toISOString();
+  const dataSource =
+    dependencies.dataSource ??
+    new BacktestDataSource({
+      season: SEASON,
+      cacheDir: preparedCacheDir,
+      sourceUrls: SOURCE_URLS,
+      sources: SOURCE_DESCRIPTORS,
+      now: () => new Date(downloadedAt),
+    });
   await dataSource.prepare();
-  await normalizeVaastavSnapshots({
-    season: SEASON,
-    cacheDir: preparedCacheDir,
-    gameweeks: Array.from({ length: 38 }, (_, index) => index + 1),
-    sourceUrls: SOURCE_URLS,
-    downloadedAt,
-    snapshotVersion: `${SEASON}-v1`,
-  });
-  console.log(formatPrepareDataMessage(preparedCacheDir));
+  try {
+    await (dependencies.normalizeSnapshots ?? normalizeVaastavSnapshots)({
+      season: SEASON,
+      cacheDir: preparedCacheDir,
+      gameweeks: Array.from({ length: 38 }, (_, index) => index + 1),
+      sourceUrls: SOURCE_URLS,
+      downloadedAt,
+      snapshotVersion: `${SEASON}-v1`,
+    });
+  } catch (error) {
+    await removeManifest(preparedCacheDir);
+    throw error;
+  }
+  (dependencies.log ?? console.log)(formatPrepareDataMessage(preparedCacheDir));
+}
+
+async function removeManifest(preparedCacheDir: string): Promise<void> {
+  try {
+    await unlink(join(preparedCacheDir, 'manifest.json'));
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+  }
 }
 
 export function deterministicStrategy(): BacktestStrategy {

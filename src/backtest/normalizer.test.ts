@@ -76,11 +76,11 @@ test('normalizeVaastavSnapshots writes valid snapshots for requested gameweeks',
   });
 });
 
-test('normalizeVaastavSnapshots prefers optional xP overlay values by element', async () => {
+test('normalizeVaastavSnapshots prefers optional xP overlay values by id', async () => {
   await withTempDir(async dir => {
     await writeBaseFiles(dir);
     await writeFile(join(dir, 'gw-raw-1.csv'), gwCsv(1));
-    await writeFile(join(dir, 'xp-raw-1.csv'), 'element,xP\n1,7.25\n3,9.5\n');
+    await writeFile(join(dir, 'xp-raw-1.csv'), 'id,xP\n1,7.25\n3,9.5\n');
 
     await normalizeVaastavSnapshots({
       season: '2024-2025',
