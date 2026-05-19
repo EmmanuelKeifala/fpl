@@ -132,31 +132,34 @@ function buildSnapshot(input: {
 }): GameweekSnapshot {
   const players: BacktestPlayer[] = [];
   const playerResults: PlayerGameweekResult[] = [];
-  const playerIds = new Set<number>();
+  const playerResultsById = new Map<number, PlayerGameweekResult>();
   const kickoffTimes: string[] = [];
 
   for (const row of input.gwRows) {
-    const playerId = parseNumber(row.element, 'element');
-    if (playerIds.has(playerId)) throw new Error(`Duplicate player id ${playerId}`);
-    playerIds.add(playerId);
+    const elementType = POSITION_BY_NAME[row.position];
+    if (elementType === undefined) continue;
 
-    players.push({
-      id: playerId,
-      webName: row.name,
-      elementType: parsePosition(row.position),
-      team: input.teamsByName.get(row.team) ?? fallbackTeamId(row.team),
-      price: parseNumber(row.value, 'value'),
-      status: 'a',
-      selectedByPercent: row.selected === undefined || row.selected === '' ? 0 : parseNumber(row.selected, 'selected'),
-      expectedPoints: input.xpByElement.get(playerId) ?? parseNumber(row.xP, 'xP'),
-    });
-    playerResults.push({
-      playerId,
-      minutes: parseNumber(row.minutes, 'minutes'),
-      totalPoints: parseNumber(row.total_points, 'total_points'),
-    });
+    const playerId = parseNumber(row.element, 'element');
+    if (!playerResultsById.has(playerId)) {
+      players.push({
+        id: playerId,
+        webName: row.name,
+        elementType,
+        team: input.teamsByName.get(row.team) ?? fallbackTeamId(row.team),
+        price: parseNumber(row.value, 'value'),
+        status: 'a',
+        selectedByPercent: row.selected === undefined || row.selected === '' ? 0 : parseNumber(row.selected, 'selected'),
+        expectedPoints: input.xpByElement.get(playerId) ?? parseNumber(row.xP, 'xP'),
+      });
+      playerResultsById.set(playerId, { playerId, minutes: 0, totalPoints: 0 });
+    }
+
+    const playerResult = playerResultsById.get(playerId)!;
+    playerResult.minutes += parseNumber(row.minutes, 'minutes');
+    playerResult.totalPoints += parseNumber(row.total_points, 'total_points');
     kickoffTimes.push(row.kickoff_time);
   }
+  playerResults.push(...playerResultsById.values());
 
   return {
     season: input.options.season,
@@ -179,12 +182,6 @@ function buildSnapshot(input: {
       knownLimitations: UNAVAILABLE_FIELDS,
     },
   };
-}
-
-function parsePosition(position: string): number {
-  const elementType = POSITION_BY_NAME[position];
-  if (elementType === undefined) throw new Error(`Invalid position ${position}`);
-  return elementType;
 }
 
 function parseNumber(value: string, label: string): number {

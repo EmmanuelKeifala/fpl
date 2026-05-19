@@ -1,5 +1,4 @@
 import { strict as assert } from 'node:assert';
-import { existsSync } from 'node:fs';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -100,29 +99,61 @@ test('normalizeVaastavSnapshots prefers optional xP overlay values by element', 
   });
 });
 
-test('normalizeVaastavSnapshots rejects duplicate player ids without writing a snapshot', async () => {
+test('normalizeVaastavSnapshots ignores unsupported non-player rows', async () => {
   await withTempDir(async dir => {
     await writeBaseFiles(dir);
     await writeFile(
       join(dir, 'gw-raw-1.csv'),
       'name,position,team,xP,element,value,selected,minutes,total_points,round,kickoff_time\n' +
         'Raya,GK,Arsenal,4.5,1,55,1000000,90,6,1,2024-08-16T19:00:00Z\n' +
-        'Raya 2,GK,Arsenal,4.5,1,55,1000000,90,6,1,2024-08-16T19:00:00Z\n'
+        'Assistant Manager,AM,Arsenal,0.0,999,0,0,0,0,1,2024-08-16T19:00:00Z\n'
     );
 
-    await assert.rejects(
-      () =>
-        normalizeVaastavSnapshots({
-          season: '2024-2025',
-          cacheDir: dir,
-          gameweeks: [1],
-          sourceUrls: ['https://example.test/vaastav'],
-          downloadedAt: '2026-05-19T00:00:00.000Z',
-          snapshotVersion: '2024-2025-v1',
-        }),
-      /Duplicate player id 1/
+    await normalizeVaastavSnapshots({
+      season: '2024-2025',
+      cacheDir: dir,
+      gameweeks: [1],
+      sourceUrls: ['https://example.test/vaastav'],
+      downloadedAt: '2026-05-19T00:00:00.000Z',
+      snapshotVersion: '2024-2025-v1',
+    });
+
+    const snapshot = await new FileSnapshotStore(dir).getSnapshot(1);
+
+    assert.equal(snapshot.knownBeforeDeadline.players.some(player => player.id === 999), false);
+    assert.equal(snapshot.actualResults.playerResults.some(result => result.playerId === 999), false);
+  });
+});
+
+test('normalizeVaastavSnapshots aggregates repeated supported element rows', async () => {
+  await withTempDir(async dir => {
+    await writeBaseFiles(dir);
+    await writeFile(
+      join(dir, 'gw-raw-1.csv'),
+      'name,position,team,xP,element,value,selected,minutes,total_points,round,kickoff_time\n' +
+        'Saka,MID,Arsenal,6.5,3,100,2000000,90,8,1,2024-08-16T19:00:00Z\n' +
+        'Saka,MID,Arsenal,3.0,3,101,2100000,70,5,1,2024-08-19T19:00:00Z\n'
     );
-    assert.equal(existsSync(join(dir, 'gw-1.json')), false);
+    await writeFile(join(dir, 'xp-raw-1.csv'), 'element,xP\n3,9.5\n');
+
+    await normalizeVaastavSnapshots({
+      season: '2024-2025',
+      cacheDir: dir,
+      gameweeks: [1],
+      sourceUrls: ['https://example.test/vaastav'],
+      downloadedAt: '2026-05-19T00:00:00.000Z',
+      snapshotVersion: '2024-2025-v1',
+    });
+
+    const snapshot = await new FileSnapshotStore(dir).getSnapshot(1);
+    const players = snapshot.knownBeforeDeadline.players.filter(player => player.id === 3);
+    const result = snapshot.actualResults.playerResults.find(playerResult => playerResult.playerId === 3);
+
+    assert.equal(players.length, 1);
+    assert.equal(players[0]?.price, 100);
+    assert.equal(players[0]?.selectedByPercent, 2000000);
+    assert.equal(players[0]?.expectedPoints, 9.5);
+    assert.deepEqual(result, { playerId: 3, minutes: 160, totalPoints: 13 });
   });
 });
 
