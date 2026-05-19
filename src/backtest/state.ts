@@ -64,7 +64,7 @@ export function applyGameweekDecision(
     captainPoints,
     benchPoints,
     chip: decision.chip,
-    squadValue: squad.reduce((total, pick) => total + pick.sellingPrice, 0),
+    squadValue: calculateSquadValue(squad, bank, playersById),
     bank,
   };
 
@@ -127,6 +127,10 @@ function refreshSellingPrice(pick: SquadPick, playersById: Map<number, BacktestP
     ...pick,
     sellingPrice: calculateSellingPrice(pick.purchasePrice, player.price),
   };
+}
+
+function calculateSquadValue(squad: SquadPick[], bank: number, playersById: Map<number, BacktestPlayer>): number {
+  return squad.reduce((total, pick) => total + getPlayer(pick.playerId, playersById).price, bank);
 }
 
 function getPlayer(playerId: number, playersById: Map<number, BacktestPlayer>): BacktestPlayer {

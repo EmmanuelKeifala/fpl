@@ -64,6 +64,7 @@ test('applyGameweekDecision creates GW1 squad and scores captain and bench', () 
   assert.equal(next.weeklyResults[0].grossPoints, 31);
   assert.equal(next.weeklyResults[0].captainPoints, 10);
   assert.equal(next.weeklyResults[0].benchPoints, 4);
+  assert.equal(next.weeklyResults[0].squadValue, 1000);
 });
 
 test('applyGameweekDecision accounts for transfers, hits, chip use, and selling prices', () => {
