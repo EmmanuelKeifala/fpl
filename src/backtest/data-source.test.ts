@@ -88,3 +88,32 @@ test('BacktestDataSource default fetch passes an abort signal with timeout', asy
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('BacktestDataSource writes named JSON and text sources', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fpl-data-source-'));
+  try {
+    const dataSource = new BacktestDataSource({
+      season: '2024-2025',
+      cacheDir: dir,
+      sourceUrls: [],
+      sources: [
+        { url: 'https://example.test/listing.json', fileName: 'source-listing.json', format: 'json' },
+        { url: 'https://example.test/fixtures.csv', fileName: 'fixtures.csv', format: 'text' },
+      ],
+      fetchJson: async () => ({ ok: true }),
+      fetchText: async () => 'id,event\n1,1\n',
+      now: () => new Date('2026-05-19T00:00:00.000Z'),
+    });
+
+    await dataSource.prepare();
+
+    assert.deepEqual(JSON.parse(await readFile(join(dir, 'source-listing.json'), 'utf8')), { ok: true });
+    assert.equal(await readFile(join(dir, 'fixtures.csv'), 'utf8'), 'id,event\n1,1\n');
+    assert.deepEqual(JSON.parse(await readFile(join(dir, 'manifest.json'), 'utf8')).sourceUrls, [
+      'https://example.test/listing.json',
+      'https://example.test/fixtures.csv',
+    ]);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
