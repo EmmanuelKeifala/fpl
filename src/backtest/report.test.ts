@@ -47,5 +47,5 @@ test('formatBacktestSummary renders a concise terminal summary', () => {
   assert.match(summary, /Season: 2024-2025/);
   assert.match(summary, /Total points: 100/);
   assert.match(summary, /Gameweeks replayed: 2/);
-  assert.match(summary, /Squad value: 102\.7m/);
+  assert.match(summary, /Squad value: 100\.2m/);
 });

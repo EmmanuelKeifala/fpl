@@ -52,7 +52,7 @@ export function buildBacktestReport(state: ManagerState, provenance: SnapshotPro
 }
 
 export function formatBacktestSummary(report: BacktestReport): string {
-  const squadValue = ((report.finalSquadValue + report.finalBank) / 10).toFixed(1);
+  const squadValue = (report.finalSquadValue / 10).toFixed(1);
   const rank = report.estimatedRankPercentile === null ? 'unavailable' : `${report.estimatedRankPercentile.toFixed(1)}%`;
 
   return [
