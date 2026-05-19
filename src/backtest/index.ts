@@ -1,14 +1,37 @@
 import { pathToFileURL } from 'node:url';
 import { FPL_RULES, POSITION_BY_ELEMENT_TYPE, type PositionKey } from '../strategy/rules.js';
-import { BacktestDataSource, getDefaultBacktestCacheDir } from './data-source.js';
+import { BacktestDataSource, getDefaultBacktestCacheDir, type BacktestSourceDescriptor } from './data-source.js';
 import { BacktestEngine } from './engine.js';
+import { normalizeVaastavSnapshots } from './normalizer.js';
 import { buildBacktestReport, formatBacktestSummary } from './report.js';
 import { FileSnapshotStore } from './snapshots.js';
 import type { BacktestPlayer, BacktestStrategy } from './types.js';
 
 const SEASON = '2024-2025';
+const VAASTAV_BASE = 'https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/2024-25';
 const SOURCE_URLS = [
   'https://api.github.com/repos/vaastav/Fantasy-Premier-League/contents/data/2024-25?ref=master',
+  `${VAASTAV_BASE}/fixtures.csv`,
+  `${VAASTAV_BASE}/teams.csv`,
+  ...Array.from({ length: 38 }, (_, index) => `${VAASTAV_BASE}/gws/gw${index + 1}.csv`),
+  ...Array.from({ length: 38 }, (_, index) => `${VAASTAV_BASE}/gws/xP${index + 1}.csv`),
+];
+
+const SOURCE_DESCRIPTORS: BacktestSourceDescriptor[] = [
+  { url: SOURCE_URLS[0], fileName: 'source-listing.json', format: 'json' },
+  { url: `${VAASTAV_BASE}/fixtures.csv`, fileName: 'fixtures.csv', format: 'text' },
+  { url: `${VAASTAV_BASE}/teams.csv`, fileName: 'teams.csv', format: 'text' },
+  ...Array.from({ length: 38 }, (_, index) => ({
+    url: `${VAASTAV_BASE}/gws/gw${index + 1}.csv`,
+    fileName: `gw-raw-${index + 1}.csv`,
+    format: 'text' as const,
+  })),
+  ...Array.from({ length: 38 }, (_, index) => ({
+    url: `${VAASTAV_BASE}/gws/xP${index + 1}.csv`,
+    fileName: `xp-raw-${index + 1}.csv`,
+    format: 'text' as const,
+    optional: true,
+  })),
 ];
 
 function cacheDir(): string {
@@ -16,13 +39,29 @@ function cacheDir(): string {
 }
 
 export function formatPrepareDataMessage(preparedCacheDir: string): string {
-  return `Prepared ${SEASON} source data at ${preparedCacheDir}. run-season requires gw-N.json snapshots in that directory; prepare-data does not generate runnable replay snapshots.`;
+  return `Prepared ${SEASON} replay cache at ${preparedCacheDir} with gw-1.json through gw-38.json.`;
 }
 
 export async function prepareData(): Promise<void> {
-  const dataSource = new BacktestDataSource({ season: SEASON, cacheDir: cacheDir(), sourceUrls: SOURCE_URLS });
+  const preparedCacheDir = cacheDir();
+  const downloadedAt = new Date().toISOString();
+  const dataSource = new BacktestDataSource({
+    season: SEASON,
+    cacheDir: preparedCacheDir,
+    sourceUrls: SOURCE_URLS,
+    sources: SOURCE_DESCRIPTORS,
+    now: () => new Date(downloadedAt),
+  });
   await dataSource.prepare();
-  console.log(formatPrepareDataMessage(cacheDir()));
+  await normalizeVaastavSnapshots({
+    season: SEASON,
+    cacheDir: preparedCacheDir,
+    gameweeks: Array.from({ length: 38 }, (_, index) => index + 1),
+    sourceUrls: SOURCE_URLS,
+    downloadedAt,
+    snapshotVersion: `${SEASON}-v1`,
+  });
+  console.log(formatPrepareDataMessage(preparedCacheDir));
 }
 
 export function deterministicStrategy(): BacktestStrategy {

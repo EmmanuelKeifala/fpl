@@ -119,11 +119,10 @@ test('deterministicStrategy builds a legal GW1 squad composition and respects cl
   assert.equal(squad.filter(playerId => playersById.get(playerId)?.team === 1).length, FPL_RULES.maxPlayersPerClub);
 });
 
-test('formatPrepareDataMessage says only source data is prepared and snapshots are still required', () => {
+test('formatPrepareDataMessage says replay snapshots are prepared', () => {
   const message = formatPrepareDataMessage('data/historical/2024-2025');
 
-  assert.match(message, /Prepared 2024-2025 source data/i);
-  assert.match(message, /run-season requires gw-N\.json snapshots/i);
-  assert.doesNotMatch(message, /backtest cache is ready/i);
-  assert.doesNotMatch(message, /prepared .*replay cache/i);
+  assert.match(message, /Prepared 2024-2025 replay cache/i);
+  assert.match(message, /gw-1\.json through gw-38\.json/i);
+  assert.doesNotMatch(message, /run-season requires gw-N\.json snapshots/i);
 });
