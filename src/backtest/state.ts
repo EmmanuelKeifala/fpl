@@ -1,4 +1,5 @@
 import { calculateSellingPrice, FPL_RULES, getFreeTransfersAfterGameweek, getTransferHitCost } from '../strategy/rules.js';
+import { validateFormation, validateSquad, type SquadPlayer } from '../strategy/squad.js';
 import type { BacktestDecision, BacktestPlayer, GameweekSnapshot, ManagerState, SquadPick, WeeklyResult } from './types.js';
 
 const INITIAL_CHIPS = ['wildcard', 'freehit', 'bboost', '3xc'] as const;
@@ -48,7 +49,8 @@ export function applyGameweekDecision(
     throw new Error('Decision is over budget');
   }
   validateUniqueSquad(squad);
-  validateLineup(decision, squad);
+  validateSquadRules(squad, bank, playersById);
+  validateLineup(decision, squad, playersById);
 
   const grossPoints = scorePlayers(decision.startingXi, resultsByPlayerId);
   const captainScore = resultsByPlayerId.get(decision.captain)?.totalPoints ?? 0;
@@ -148,10 +150,36 @@ function validateUniqueSquad(squad: SquadPick[]): void {
   assertNoDuplicates(squad.map(pick => pick.playerId), 'final squad');
 }
 
-function validateLineup(decision: BacktestDecision, squad: SquadPick[]): void {
+function validateSquadRules(squad: SquadPick[], bank: number, playersById: Map<number, BacktestPlayer>): void {
+  const squadPlayers = squad.map<SquadPlayer>(pick => {
+    const player = getPlayer(pick.playerId, playersById);
+    return { id: player.id, elementType: player.elementType, team: player.team, price: player.price };
+  });
+  const currentSquadValueBudget = squadPlayers.reduce((total, player) => total + player.price, bank);
+  const result = validateSquad(squadPlayers, currentSquadValueBudget);
+  if (!result.valid) {
+    throw new Error(result.errors.join('; '));
+  }
+}
+
+function validateLineup(decision: BacktestDecision, squad: SquadPick[], playersById: Map<number, BacktestPlayer>): void {
+  if (decision.captain === decision.viceCaptain) {
+    throw new Error('Captain and vice captain must be different');
+  }
+
   const ownedPlayerIds = new Set(squad.map(pick => pick.playerId));
   const selectedPlayerIds = [...decision.startingXi, ...decision.bench];
   assertNoDuplicates(selectedPlayerIds, 'lineup');
+
+  const expectedLineupSize = FPL_RULES.startingSize + (FPL_RULES.squadSize - FPL_RULES.startingSize);
+  if (selectedPlayerIds.length !== expectedLineupSize || selectedPlayerIds.length !== ownedPlayerIds.size) {
+    throw new Error(`Lineup must cover all ${FPL_RULES.squadSize} squad players`);
+  }
+
+  const formation = validateFormation(decision.startingXi.map(playerId => getPlayer(playerId, playersById).elementType));
+  if (!formation.valid) {
+    throw new Error(formation.errors.join('; '));
+  }
 
   for (const playerId of [...selectedPlayerIds, decision.captain, decision.viceCaptain]) {
     if (!ownedPlayerIds.has(playerId)) {

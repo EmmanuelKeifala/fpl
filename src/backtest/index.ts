@@ -1,5 +1,5 @@
 import { pathToFileURL } from 'node:url';
-import { FPL_RULES } from '../strategy/rules.js';
+import { FPL_RULES, POSITION_BY_ELEMENT_TYPE, type PositionKey } from '../strategy/rules.js';
 import { BacktestDataSource, getDefaultBacktestCacheDir } from './data-source.js';
 import { BacktestEngine } from './engine.js';
 import { buildBacktestReport, formatBacktestSummary } from './report.js';
@@ -15,10 +15,14 @@ function cacheDir(): string {
   return process.env.FPL_BACKTEST_CACHE_DIR ?? getDefaultBacktestCacheDir(SEASON);
 }
 
-async function prepareData(): Promise<void> {
+export function formatPrepareDataMessage(preparedCacheDir: string): string {
+  return `Prepared ${SEASON} source data at ${preparedCacheDir}. run-season requires gw-N.json snapshots in that directory; prepare-data does not generate runnable replay snapshots.`;
+}
+
+export async function prepareData(): Promise<void> {
   const dataSource = new BacktestDataSource({ season: SEASON, cacheDir: cacheDir(), sourceUrls: SOURCE_URLS });
   await dataSource.prepare();
-  console.log(`Prepared ${SEASON} backtest cache at ${cacheDir()}`);
+  console.log(formatPrepareDataMessage(cacheDir()));
 }
 
 export function deterministicStrategy(): BacktestStrategy {
@@ -50,15 +54,9 @@ function buildInitialSquad(players: BacktestPlayer[]): number[] {
 
   while (selected.length < FPL_RULES.squadSize) {
     const remaining = ranked.filter(player => !selected.some(selectedPlayer => selectedPlayer.id === player.id));
-    const slotsAfterCandidate = FPL_RULES.squadSize - selected.length - 1;
     const candidate = remaining.find(player => {
-      const cheapestRemaining = remaining
-        .filter(otherPlayer => otherPlayer.id !== player.id)
-        .sort((a, b) => a.price - b.price || a.id - b.id)
-        .slice(0, slotsAfterCandidate);
-
-      if (cheapestRemaining.length < slotsAfterCandidate) return false;
-      const minimumRemainingCost = cheapestRemaining.reduce((total, otherPlayer) => total + otherPlayer.price, 0);
+      const minimumRemainingCost = minimumCostToCompleteSquad([...selected, player], remaining.filter(otherPlayer => otherPlayer.id !== player.id));
+      if (minimumRemainingCost === undefined) return false;
       return spent + player.price + minimumRemainingCost <= FPL_RULES.initialBudget;
     });
 
@@ -71,6 +69,53 @@ function buildInitialSquad(players: BacktestPlayer[]): number[] {
   }
 
   return selected.map(player => player.id);
+}
+
+function minimumCostToCompleteSquad(selected: BacktestPlayer[], remaining: BacktestPlayer[]): number | undefined {
+  const selectedPositionCounts = countSelectedByPosition(selected);
+  const selectedTeamCounts = countSelectedByTeam(selected);
+  for (const [position, expected] of Object.entries(FPL_RULES.squadComposition)) {
+    if (selectedPositionCounts[position as PositionKey] > expected) return undefined;
+  }
+  if ([...selectedTeamCounts.values()].some(count => count > FPL_RULES.maxPlayersPerClub)) return undefined;
+
+  let cost = 0;
+  const teamCounts = new Map(selectedTeamCounts);
+
+  for (const [position, expected] of Object.entries(FPL_RULES.squadComposition)) {
+    const positionKey = position as PositionKey;
+    const required = expected - selectedPositionCounts[positionKey];
+    const cheapest = remaining
+      .filter(player => POSITION_BY_ELEMENT_TYPE[player.elementType] === positionKey)
+      .sort((a, b) => a.price - b.price || a.id - b.id);
+
+    for (let index = 0; index < required; index++) {
+      const player = cheapest.find(candidate => (teamCounts.get(candidate.team) ?? 0) < FPL_RULES.maxPlayersPerClub);
+      if (!player) return undefined;
+      cost += player.price;
+      teamCounts.set(player.team, (teamCounts.get(player.team) ?? 0) + 1);
+      cheapest.splice(cheapest.indexOf(player), 1);
+    }
+  }
+
+  return cost;
+}
+
+function countSelectedByPosition(players: BacktestPlayer[]): Record<PositionKey, number> {
+  const counts: Record<PositionKey, number> = { goalkeeper: 0, defender: 0, midfielder: 0, forward: 0 };
+  for (const player of players) {
+    const position = POSITION_BY_ELEMENT_TYPE[player.elementType];
+    if (position) counts[position]++;
+  }
+  return counts;
+}
+
+function countSelectedByTeam(players: BacktestPlayer[]): Map<number, number> {
+  const counts = new Map<number, number>();
+  for (const player of players) {
+    counts.set(player.team, (counts.get(player.team) ?? 0) + 1);
+  }
+  return counts;
 }
 
 function rankPlayerIds(playerIds: number[], playersById: Map<number, BacktestPlayer>): number[] {
@@ -88,7 +133,7 @@ function rankPlayers(players: BacktestPlayer[]): BacktestPlayer[] {
   return [...players].sort((a, b) => b.expectedPoints - a.expectedPoints || a.id - b.id);
 }
 
-async function runSeason(): Promise<void> {
+export async function runSeason(): Promise<void> {
   const store = new FileSnapshotStore(cacheDir());
   const firstSnapshot = await store.getSnapshot(1);
   const engine = new BacktestEngine({

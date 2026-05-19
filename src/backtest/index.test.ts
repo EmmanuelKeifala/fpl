@@ -1,15 +1,16 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
 import { FPL_RULES } from '../strategy/rules.js';
-import { deterministicStrategy } from './index.js';
+import { validateSquad } from '../strategy/squad.js';
+import { deterministicStrategy, formatPrepareDataMessage } from './index.js';
 import type { BacktestPlayer, ManagerState } from './types.js';
 
-function player(id: number, expectedPoints: number, price: number): BacktestPlayer {
+function player(id: number, expectedPoints: number, price: number, elementType = 3, team = id): BacktestPlayer {
   return {
     id,
     webName: `Player ${id}`,
-    elementType: 3,
-    team: id,
+    elementType,
+    team,
     price,
     status: 'a',
     selectedByPercent: 0,
@@ -56,8 +57,20 @@ test('deterministicStrategy starts only owned players after GW1', async () => {
 });
 
 test('deterministicStrategy builds a GW1 squad within budget when top picks are too expensive', async () => {
-  const expensivePlayers = Array.from({ length: 15 }, (_, index) => player(index + 1, 100 - index, 90));
-  const cheapPlayers = Array.from({ length: 15 }, (_, index) => player(index + 16, 50 - index, 20));
+  const expensivePlayers = [
+    player(1, 100, 90, 1),
+    player(2, 99, 90, 1),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 3, 98 - index, 90, 2)),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 8, 93 - index, 90, 3)),
+    ...Array.from({ length: 3 }, (_, index) => player(index + 13, 88 - index, 90, 4)),
+  ];
+  const cheapPlayers = [
+    player(16, 50, 20, 1),
+    player(17, 49, 20, 1),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 18, 48 - index, 20, 2)),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 23, 43 - index, 20, 3)),
+    ...Array.from({ length: 3 }, (_, index) => player(index + 28, 38 - index, 20, 4)),
+  ];
   const players = [...expensivePlayers, ...cheapPlayers];
   const decision = await deterministicStrategy()({
     state: stateWithSquad([]),
@@ -77,4 +90,40 @@ test('deterministicStrategy builds a GW1 squad within budget when top picks are 
   assert.equal(squad.length, FPL_RULES.squadSize);
   assert.equal(totalPrice <= FPL_RULES.initialBudget, true);
   assert.equal(squad.some(playerId => playerId > 15), true);
+});
+
+test('deterministicStrategy builds a legal GW1 squad composition and respects club limits', async () => {
+  const players = [
+    player(1, 100, 45, 1, 1),
+    player(2, 99, 45, 1, 2),
+    ...Array.from({ length: 8 }, (_, index) => player(index + 3, 98 - index, 45, 2, index < 3 ? 1 : index)),
+    ...Array.from({ length: 8 }, (_, index) => player(index + 11, 90 - index, 45, 3, index < 3 ? 1 : index + 3)),
+    ...Array.from({ length: 4 }, (_, index) => player(index + 19, 82 - index, 45, 4, index + 9)),
+  ];
+  const decision = await deterministicStrategy()({
+    state: stateWithSquad([]),
+    snapshot: {
+      season: '2024-2025',
+      gameweek: 1,
+      deadline: '2024-08-16T17:30:00Z',
+      knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    },
+  });
+
+  const squad = decision.squad ?? [];
+  const playersById = new Map(players.map(candidate => [candidate.id, candidate]));
+  const validation = validateSquad(squad.map(playerId => playersById.get(playerId)!), FPL_RULES.initialBudget);
+
+  assert.deepEqual(validation.errors, []);
+  assert.equal(squad.filter(playerId => playersById.get(playerId)?.team === 1).length, FPL_RULES.maxPlayersPerClub);
+});
+
+test('formatPrepareDataMessage says only source data is prepared and snapshots are still required', () => {
+  const message = formatPrepareDataMessage('data/historical/2024-2025');
+
+  assert.match(message, /Prepared 2024-2025 source data/i);
+  assert.match(message, /run-season requires gw-N\.json snapshots/i);
+  assert.doesNotMatch(message, /backtest cache is ready/i);
+  assert.doesNotMatch(message, /prepared .*replay cache/i);
 });
