@@ -64,7 +64,7 @@ test('normalizeVaastavSnapshots writes valid snapshots for requested gameweeks',
       team: 1,
       price: 55,
       status: 'a',
-      selectedByPercent: 1000000,
+      selectedByPercent: 0,
       expectedPoints: 4.5,
     });
     assert.deepEqual(snapshot.actualResults.playerResults.find(result => result.playerId === 3), {
@@ -151,7 +151,7 @@ test('normalizeVaastavSnapshots aggregates repeated supported element rows', asy
 
     assert.equal(players.length, 1);
     assert.equal(players[0]?.price, 100);
-    assert.equal(players[0]?.selectedByPercent, 2000000);
+    assert.equal(players[0]?.selectedByPercent, 0);
     assert.equal(players[0]?.expectedPoints, 9.5);
     assert.deepEqual(result, { playerId: 3, minutes: 160, totalPoints: 13 });
   });

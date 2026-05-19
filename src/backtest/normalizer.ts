@@ -28,7 +28,7 @@ const UNAVAILABLE_FIELDS = [
   'injury/news history unavailable',
   'exact pre-deadline status unavailable',
   'exact historical deadline times unavailable; earliest kickoff used',
-  'ownership timing approximated',
+  'historical ownership percentage unavailable; raw selected counts are not used as percentages',
   'rank distribution unavailable/default scores',
 ];
 
@@ -148,7 +148,7 @@ function buildSnapshot(input: {
         team: input.teamsByName.get(row.team) ?? fallbackTeamId(row.team),
         price: parseNumber(row.value, 'value'),
         status: 'a',
-        selectedByPercent: row.selected === undefined || row.selected === '' ? 0 : parseNumber(row.selected, 'selected'),
+        selectedByPercent: 0,
         expectedPoints: input.xpByElement.get(playerId) ?? parseNumber(row.xP, 'xP'),
       });
       playerResultsById.set(playerId, { playerId, minutes: 0, totalPoints: 0 });
