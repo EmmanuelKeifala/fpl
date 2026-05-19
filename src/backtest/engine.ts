@@ -20,10 +20,10 @@ export class BacktestEngine {
         season: snapshot.season,
         gameweek: snapshot.gameweek,
         deadline: snapshot.deadline,
-        knownBeforeDeadline: snapshot.knownBeforeDeadline,
-        provenance: snapshot.provenance,
+        knownBeforeDeadline: structuredClone(snapshot.knownBeforeDeadline),
+        provenance: structuredClone(snapshot.provenance),
       };
-      const decision = await this.options.strategy({ state, snapshot: decisionSnapshot });
+      const decision = await this.options.strategy({ state: structuredClone(state), snapshot: decisionSnapshot });
       state = applyGameweekDecision(state, decision, snapshot);
     }
 

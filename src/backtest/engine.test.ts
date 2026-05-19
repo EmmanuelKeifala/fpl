@@ -15,6 +15,8 @@ function makeSnapshot(gameweek: number, midfielderPoints: number): GameweekSnaps
         { id: 3, webName: 'Midfielder', elementType: 3, team: 3, price: 95, status: 'a', selectedByPercent: 35, expectedPoints: 7 },
         { id: 4, webName: 'Forward', elementType: 4, team: 4, price: 80, status: 'a', selectedByPercent: 18, expectedPoints: 5 },
         { id: 5, webName: 'Bench', elementType: 2, team: 5, price: 40, status: 'a', selectedByPercent: 5, expectedPoints: 2 },
+        { id: 6, webName: 'Replacement', elementType: 4, team: 6, price: 80, status: 'a', selectedByPercent: 6, expectedPoints: 3 },
+        { id: 7, webName: 'Bench Replacement', elementType: 2, team: 7, price: 40, status: 'a', selectedByPercent: 7, expectedPoints: 2 },
       ],
       fixtures: [],
       unavailableFields: [],
@@ -26,6 +28,8 @@ function makeSnapshot(gameweek: number, midfielderPoints: number): GameweekSnaps
         { playerId: 3, minutes: 90, totalPoints: midfielderPoints },
         { playerId: 4, minutes: 90, totalPoints: 2 },
         { playerId: 5, minutes: 90, totalPoints: 4 },
+        { playerId: 6, minutes: 90, totalPoints: 2 },
+        { playerId: 7, minutes: 90, totalPoints: 4 },
       ],
       averageEntryScore: 50,
       highestScore: 100,
@@ -80,4 +84,69 @@ test('BacktestEngine strategy context does not expose actualResults', async () =
 
   const result = await engine.run();
   assert.equal(result.totalPoints, 209);
+});
+
+test('BacktestEngine isolates decision snapshot mutations from scoring state', async () => {
+  const engine = new BacktestEngine({
+    season: '2024-2025',
+    gameweeks: [1],
+    getSnapshot: async () => makeSnapshot(1, 10),
+    strategy: async ({ snapshot }): Promise<BacktestDecision> => {
+      snapshot.knownBeforeDeadline.players[2].price = 995;
+      return {
+        gameweek: 1,
+        squad: [1, 2, 3, 4, 5],
+        transfers: [],
+        startingXi: [1, 2, 3, 4],
+        bench: [5],
+        captain: 3,
+        viceCaptain: 4,
+        notes: ['mutates snapshot price'],
+      };
+    },
+  });
+
+  const result = await engine.run();
+  assert.equal(result.totalPoints, 31);
+  assert.equal(result.bank, 685);
+});
+
+test('BacktestEngine isolates strategy state mutations from transfer-hit accounting', async () => {
+  const engine = new BacktestEngine({
+    season: '2024-2025',
+    gameweeks: [1, 2],
+    getSnapshot: async gameweek => makeSnapshot(gameweek, gameweek === 1 ? 10 : 12),
+    strategy: async ({ state, snapshot }): Promise<BacktestDecision> => {
+      if (snapshot.gameweek === 2) {
+        state.freeTransfers = 99;
+        return {
+          gameweek: 2,
+          transfers: [
+            { out: 4, in: 6 },
+            { out: 5, in: 7 },
+          ],
+          startingXi: [1, 2, 3, 6],
+          bench: [7],
+          captain: 3,
+          viceCaptain: 6,
+          notes: ['mutates free transfers'],
+        };
+      }
+
+      return {
+        gameweek: 1,
+        squad: [1, 2, 3, 4, 5],
+        transfers: [],
+        startingXi: [1, 2, 3, 4],
+        bench: [5],
+        captain: 3,
+        viceCaptain: 4,
+        notes: ['initial squad'],
+      };
+    },
+  });
+
+  const result = await engine.run();
+  assert.equal(result.totalPoints, 62);
+  assert.equal(result.weeklyResults[1].transferCost, 4);
 });
