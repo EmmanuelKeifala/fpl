@@ -246,6 +246,18 @@ test('applyGameweekDecision rejects unavailable chips', () => {
   }), snapshot(2)), /chip .*available/i);
 });
 
+test('applyGameweekDecision rejects GW1 free hit', () => {
+  assert.throws(() => applyGameweekDecision(createInitialState('2024-2025'), validDecision({
+    chip: 'freehit',
+  }), snapshot(1)), /chip .*not available.*gameweek 1/i);
+});
+
+test('applyGameweekDecision rejects GW1 wildcard', () => {
+  assert.throws(() => applyGameweekDecision(createInitialState('2024-2025'), validDecision({
+    chip: 'wildcard',
+  }), snapshot(1)), /chip .*not available.*gameweek 1/i);
+});
+
 test('applyGameweekDecision rejects transfers out of non-squad players', () => {
   const afterGw1 = stateAfterGw1();
 

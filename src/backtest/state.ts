@@ -1,4 +1,4 @@
-import { calculateSellingPrice, FPL_RULES, getFreeTransfersAfterGameweek, getTransferHitCost } from '../strategy/rules.js';
+import { calculateSellingPrice, FPL_RULES, getFreeTransfersAfterGameweek, getTransferHitCost, isChipAvailableInGameweek } from '../strategy/rules.js';
 import { validateFormation, validateSquad, type SquadPlayer } from '../strategy/squad.js';
 import type { BacktestDecision, BacktestPlayer, GameweekSnapshot, ManagerState, SquadPick, WeeklyResult } from './types.js';
 
@@ -28,6 +28,10 @@ export function applyGameweekDecision(
 
   if (decision.chip && !state.chipsAvailable.includes(decision.chip)) {
     throw new Error(`Chip ${decision.chip} is not available`);
+  }
+
+  if (decision.chip && !isChipAvailableInGameweek(decision.chip, decision.gameweek)) {
+    throw new Error(`Chip ${decision.chip} is not available in gameweek ${decision.gameweek}`);
   }
 
   const playersById = new Map(snapshot.knownBeforeDeadline.players.map(player => [player.id, player]));
