@@ -47,6 +47,8 @@ export function applyGameweekDecision(
   if (bank < 0) {
     throw new Error('Decision is over budget');
   }
+  validateUniqueSquad(squad);
+  validateLineup(decision, squad);
 
   const grossPoints = scorePlayers(decision.startingXi, resultsByPlayerId);
   const captainScore = resultsByPlayerId.get(decision.captain)?.totalPoints ?? 0;
@@ -67,14 +69,19 @@ export function applyGameweekDecision(
     squadValue: calculateSquadValue(squad, bank, playersById),
     bank,
   };
+  const persistedSquad = decision.chip === 'freehit' ? state.squad : squad;
+  const persistedBank = decision.chip === 'freehit' ? state.bank : bank;
+  const transfersForFreeTransferCarryover = decision.chip === 'wildcard' || decision.chip === 'freehit'
+    ? 0
+    : decision.squad && transfersMade === 0 ? 1 : transfersMade;
 
   return {
     season: state.season,
-    squad,
-    bank,
+    squad: persistedSquad,
+    bank: persistedBank,
     freeTransfers: getFreeTransfersAfterGameweek({
       previousFreeTransfers: state.freeTransfers,
-      transfersMade: decision.squad && transfersMade === 0 ? 1 : transfersMade,
+      transfersMade: transfersForFreeTransferCarryover,
       nextGameweek: decision.gameweek + 1,
     }),
     chipsAvailable: decision.chip ? state.chipsAvailable.filter(chip => chip !== decision.chip) : [...state.chipsAvailable],
@@ -114,6 +121,10 @@ function applyTransfers(
     squad = squad.filter(pick => pick.playerId !== transfer.out);
 
     const incoming = getPlayer(transfer.in, playersById);
+    if (squad.some(pick => pick.playerId === incoming.id)) {
+      throw new Error(`Duplicate player ${incoming.id} in final squad`);
+    }
+
     bank -= incoming.price;
     squad = [...squad, { playerId: incoming.id, purchasePrice: incoming.price, sellingPrice: incoming.price }];
   }
@@ -131,6 +142,32 @@ function refreshSellingPrice(pick: SquadPick, playersById: Map<number, BacktestP
 
 function calculateSquadValue(squad: SquadPick[], bank: number, playersById: Map<number, BacktestPlayer>): number {
   return squad.reduce((total, pick) => total + getPlayer(pick.playerId, playersById).price, bank);
+}
+
+function validateUniqueSquad(squad: SquadPick[]): void {
+  assertNoDuplicates(squad.map(pick => pick.playerId), 'final squad');
+}
+
+function validateLineup(decision: BacktestDecision, squad: SquadPick[]): void {
+  const ownedPlayerIds = new Set(squad.map(pick => pick.playerId));
+  const selectedPlayerIds = [...decision.startingXi, ...decision.bench];
+  assertNoDuplicates(selectedPlayerIds, 'lineup');
+
+  for (const playerId of [...selectedPlayerIds, decision.captain, decision.viceCaptain]) {
+    if (!ownedPlayerIds.has(playerId)) {
+      throw new Error(`Player ${playerId} is not in squad`);
+    }
+  }
+}
+
+function assertNoDuplicates(playerIds: number[], label: string): void {
+  const seen = new Set<number>();
+  for (const playerId of playerIds) {
+    if (seen.has(playerId)) {
+      throw new Error(`Duplicate player ${playerId} in ${label}`);
+    }
+    seen.add(playerId);
+  }
 }
 
 function getPlayer(playerId: number, playersById: Map<number, BacktestPlayer>): BacktestPlayer {

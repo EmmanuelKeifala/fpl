@@ -156,6 +156,172 @@ test('applyGameweekDecision waives transfer hits for wildcard and freehit', () =
   assert.equal(freehit.weeklyResults[1].transferCost, 0);
 });
 
+test('applyGameweekDecision scores free hit squad but restores original squad and bank', () => {
+  const afterGw1 = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(1));
+
+  const next = applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 3, in: 6 }],
+    startingXi: [1, 2, 4, 6],
+    bench: [5],
+    captain: 6,
+    viceCaptain: 4,
+    chip: 'freehit',
+    notes: [],
+  }, snapshot(2));
+
+  assert.deepEqual(next.squad.map(pick => pick.playerId), [1, 2, 3, 4, 5]);
+  assert.equal(next.bank, 685);
+  assert.equal(next.weeklyResults[1].grossPoints, 35);
+  assert.equal(next.weeklyResults[1].squadValue, 1000);
+});
+
+test('applyGameweekDecision does not consume saved transfers for wildcard and freehit', () => {
+  const afterGw1 = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(1));
+
+  const wildcard = applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 3, in: 6 }, { out: 5, in: 3 }],
+    startingXi: [1, 2, 4, 6],
+    bench: [3],
+    captain: 6,
+    viceCaptain: 4,
+    chip: 'wildcard',
+    notes: [],
+  }, snapshot(2));
+
+  const freehit = applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 3, in: 6 }, { out: 5, in: 3 }],
+    startingXi: [1, 2, 4, 6],
+    bench: [3],
+    captain: 6,
+    viceCaptain: 4,
+    chip: 'freehit',
+    notes: [],
+  }, snapshot(2));
+
+  assert.equal(wildcard.freeTransfers, 2);
+  assert.equal(freehit.freeTransfers, 2);
+});
+
+test('applyGameweekDecision rejects scoring players not owned by final squad', () => {
+  const afterGw1 = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(1));
+
+  assert.throws(() => applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [],
+    startingXi: [1, 2, 4, 6],
+    bench: [5],
+    captain: 4,
+    viceCaptain: 3,
+    notes: [],
+  }, snapshot(2)), /not in squad/i);
+
+  assert.throws(() => applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 6,
+    viceCaptain: 3,
+    notes: [],
+  }, snapshot(2)), /not in squad/i);
+});
+
+test('applyGameweekDecision rejects duplicate incoming transfers and final squads', () => {
+  const afterGw1 = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(1));
+
+  assert.throws(() => applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 5, in: 3 }],
+    startingXi: [1, 2, 3, 4],
+    bench: [3],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(2)), /duplicate/i);
+
+  assert.throws(() => applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 3, in: 6 }, { out: 5, in: 6 }],
+    startingXi: [1, 2, 4, 6],
+    bench: [6],
+    captain: 6,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(2)), /duplicate/i);
+});
+
+test('applyGameweekDecision rejects duplicate lineup selections', () => {
+  const afterGw1 = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(1));
+
+  assert.throws(() => applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [],
+    startingXi: [1, 2, 3, 3],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(2)), /duplicate/i);
+
+  assert.throws(() => applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [4],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(2)), /duplicate/i);
+});
+
 test('applyGameweekDecision includes bench points in score when bench boost is active', () => {
   const next = applyGameweekDecision(createInitialState('2024-2025'), {
     gameweek: 1,
