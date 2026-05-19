@@ -60,7 +60,7 @@ export class BacktestDataSource {
     await mkdir(this.options.cacheDir, { recursive: true });
     await this.removeManifest();
 
-    const sources = this.options.sources ?? this.options.sourceUrls.map((url, index) => ({
+    const sources: BacktestSourceDescriptor[] = this.options.sources ?? this.options.sourceUrls.map((url, index) => ({
       url,
       fileName: `source-${index + 1}.json`,
       format: 'json' as const,
