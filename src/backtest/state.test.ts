@@ -65,6 +65,8 @@ test('applyGameweekDecision creates GW1 squad and scores captain and bench', () 
   assert.equal(next.weeklyResults[0].captainPoints, 10);
   assert.equal(next.weeklyResults[0].benchPoints, 4);
   assert.equal(next.weeklyResults[0].squadValue, 1000);
+  assert.equal(next.decisions.length, 1);
+  assert.equal(next.decisions[0].gameweek, 1);
 });
 
 test('applyGameweekDecision accounts for transfers, hits, chip use, and selling prices', () => {
@@ -96,8 +98,11 @@ test('applyGameweekDecision accounts for transfers, hits, chip use, and selling 
   assert.equal(next.weeklyResults[1].grossPoints, 47);
   assert.equal(next.weeklyResults[1].points, 43);
   assert.equal(next.weeklyResults[1].captainPoints, 24);
+  assert.equal(next.weeklyResults[1].squadValue, 1001);
   assert.equal(next.chipsAvailable.includes('3xc'), false);
   assert.equal(next.freeTransfers, 1);
+  assert.equal(next.decisions.length, 2);
+  assert.equal(next.decisions[1].gameweek, 2);
 });
 
 test('applyGameweekDecision rejects gameweek and snapshot mismatches', () => {
