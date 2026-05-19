@@ -38,7 +38,28 @@ test('buildBacktestReport includes season metrics and provenance', () => {
   assert.equal(report.weekly.length, 2);
   assert.equal(report.transfers.length, 1);
   assert.deepEqual(report.chips, [{ gameweek: 2, chip: '3xc', points: 40 }]);
+  assert.equal(report.finalSquadValue, 1002);
   assert.equal(report.provenance.snapshotVersion, '2024-2025-v1');
+});
+
+test('buildBacktestReport values final free hit state from persisted squad and bank', () => {
+  const freeHitState = state();
+  freeHitState.weeklyResults[1] = {
+    ...freeHitState.weeklyResults[1],
+    chip: 'freehit',
+    squadValue: 1200,
+  };
+  freeHitState.squad = [
+    { playerId: 1, purchasePrice: 75, sellingPrice: 76 },
+    { playerId: 3, purchasePrice: 80, sellingPrice: 82 },
+  ];
+  freeHitState.bank = 14;
+
+  const report = buildBacktestReport(freeHitState, provenance);
+
+  assert.deepEqual(report.finalSquad, [1, 3]);
+  assert.equal(report.finalBank, 14);
+  assert.equal(report.finalSquadValue, 172);
 });
 
 test('formatBacktestSummary renders a concise terminal summary', () => {

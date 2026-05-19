@@ -36,6 +36,9 @@ export function buildBacktestReport(state: ManagerState, provenance: SnapshotPro
     .filter(result => result.chip)
     .map(result => ({ gameweek: result.gameweek, chip: result.chip as ChipName, points: result.points }));
   const lastWeek = state.weeklyResults[state.weeklyResults.length - 1];
+  const finalSquadValue = lastWeek?.chip === 'freehit'
+    ? state.squad.reduce((total, pick) => total + pick.sellingPrice, state.bank)
+    : lastWeek?.squadValue ?? state.bank;
 
   return {
     season: state.season,
@@ -46,7 +49,7 @@ export function buildBacktestReport(state: ManagerState, provenance: SnapshotPro
     chips,
     finalSquad: state.squad.map(pick => pick.playerId),
     finalBank: state.bank,
-    finalSquadValue: lastWeek?.squadValue ?? state.bank,
+    finalSquadValue,
     provenance,
   };
 }
