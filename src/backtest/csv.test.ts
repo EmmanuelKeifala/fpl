@@ -19,6 +19,10 @@ test('parseCsv rejects rows with a different field count than the header', () =>
   assert.throws(() => parseCsv('id,name\n1,Alpha,extra'), /CSV row 2 has 3 fields; expected 2/);
 });
 
+test('parseCsv rejects interior blank rows', () => {
+  assert.throws(() => parseCsv('id,name\n\n1,Alpha'), /CSV row 2 has 1 fields; expected 2/);
+});
+
 test('requireColumns rejects missing headers', () => {
   assert.throws(() => requireColumns(['id', 'name'], ['id', 'value'], 'players'), /players is missing required columns: value/);
 });

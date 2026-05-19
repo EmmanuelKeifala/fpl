@@ -5,15 +5,15 @@ export function parseCsv(input: string): CsvRow[] {
   if (records.length === 0) return [];
 
   const [headers, ...rows] = records;
-  return rows
-    .filter(row => row.length > 1 || row[0] !== '')
-    .map((row, index) => {
-      if (row.length !== headers.length) {
-        throw new Error(`CSV row ${index + 2} has ${row.length} fields; expected ${headers.length}`);
-      }
+  if (rows.at(-1)?.length === 1 && rows.at(-1)?.[0] === '') rows.pop();
 
-      return Object.fromEntries(headers.map((header, headerIndex) => [header, row[headerIndex] ?? '']));
-    });
+  return rows.map((row, index) => {
+    if (row.length !== headers.length) {
+      throw new Error(`CSV row ${index + 2} has ${row.length} fields; expected ${headers.length}`);
+    }
+
+    return Object.fromEntries(headers.map((header, headerIndex) => [header, row[headerIndex] ?? '']));
+  });
 }
 
 export function requireColumns(headers: string[], requiredColumns: string[], label: string): void {
