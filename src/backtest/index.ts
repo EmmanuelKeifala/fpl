@@ -1,8 +1,10 @@
+import { pathToFileURL } from 'node:url';
+import { FPL_RULES } from '../strategy/rules.js';
 import { BacktestDataSource, getDefaultBacktestCacheDir } from './data-source.js';
 import { BacktestEngine } from './engine.js';
 import { buildBacktestReport, formatBacktestSummary } from './report.js';
 import { FileSnapshotStore } from './snapshots.js';
-import type { BacktestDecision } from './types.js';
+import type { BacktestPlayer, BacktestStrategy } from './types.js';
 
 const SEASON = '2024-2025';
 const SOURCE_URLS = [
@@ -19,15 +21,18 @@ async function prepareData(): Promise<void> {
   console.log(`Prepared ${SEASON} backtest cache at ${cacheDir()}`);
 }
 
-function deterministicStrategy(): (context: { snapshot: { gameweek: number; knownBeforeDeadline: { players: { id: number; expectedPoints: number }[] } } }) => BacktestDecision {
-  return ({ snapshot }) => {
-    const ordered = [...snapshot.knownBeforeDeadline.players].sort((a, b) => b.expectedPoints - a.expectedPoints);
-    const squad = ordered.slice(0, 15).map(player => player.id);
-    const startingXi = squad.slice(0, 11);
-    const bench = squad.slice(11);
+export function deterministicStrategy(): BacktestStrategy {
+  return ({ state, snapshot }) => {
+    const playersById = new Map(snapshot.knownBeforeDeadline.players.map(player => [player.id, player]));
+    const squad = snapshot.gameweek === 1 ? buildInitialSquad(snapshot.knownBeforeDeadline.players) : undefined;
+    const lineupPool = squad ?? state.squad.map(pick => pick.playerId);
+    const orderedLineup = rankPlayerIds(lineupPool, playersById);
+    const startingXi = orderedLineup.slice(0, FPL_RULES.startingSize);
+    const bench = orderedLineup.slice(FPL_RULES.startingSize);
+
     return {
       gameweek: snapshot.gameweek,
-      squad: snapshot.gameweek === 1 ? squad : undefined,
+      squad,
       transfers: [],
       startingXi,
       bench,
@@ -36,6 +41,51 @@ function deterministicStrategy(): (context: { snapshot: { gameweek: number; know
       notes: ['Deterministic baseline strategy for replay plumbing'],
     };
   };
+}
+
+function buildInitialSquad(players: BacktestPlayer[]): number[] {
+  const ranked = rankPlayers(players);
+  const selected: BacktestPlayer[] = [];
+  let spent = 0;
+
+  while (selected.length < FPL_RULES.squadSize) {
+    const remaining = ranked.filter(player => !selected.some(selectedPlayer => selectedPlayer.id === player.id));
+    const slotsAfterCandidate = FPL_RULES.squadSize - selected.length - 1;
+    const candidate = remaining.find(player => {
+      const cheapestRemaining = remaining
+        .filter(otherPlayer => otherPlayer.id !== player.id)
+        .sort((a, b) => a.price - b.price || a.id - b.id)
+        .slice(0, slotsAfterCandidate);
+
+      if (cheapestRemaining.length < slotsAfterCandidate) return false;
+      const minimumRemainingCost = cheapestRemaining.reduce((total, otherPlayer) => total + otherPlayer.price, 0);
+      return spent + player.price + minimumRemainingCost <= FPL_RULES.initialBudget;
+    });
+
+    if (!candidate) {
+      throw new Error(`No deterministic ${FPL_RULES.squadSize}-player squad fits the ${FPL_RULES.initialBudget} budget`);
+    }
+
+    selected.push(candidate);
+    spent += candidate.price;
+  }
+
+  return selected.map(player => player.id);
+}
+
+function rankPlayerIds(playerIds: number[], playersById: Map<number, BacktestPlayer>): number[] {
+  return [...playerIds].sort((a, b) => {
+    const playerA = playersById.get(a);
+    const playerB = playersById.get(b);
+    if (!playerA) throw new Error(`Player ${a} is missing from gameweek snapshot`);
+    if (!playerB) throw new Error(`Player ${b} is missing from gameweek snapshot`);
+
+    return playerB.expectedPoints - playerA.expectedPoints || a - b;
+  });
+}
+
+function rankPlayers(players: BacktestPlayer[]): BacktestPlayer[] {
+  return [...players].sort((a, b) => b.expectedPoints - a.expectedPoints || a.id - b.id);
 }
 
 async function runSeason(): Promise<void> {
@@ -53,13 +103,19 @@ async function runSeason(): Promise<void> {
   console.log(JSON.stringify(report, null, 2));
 }
 
-const command = process.argv[2];
+async function main(): Promise<void> {
+  const command = process.argv[2];
 
-if (command === 'prepare-data') {
-  await prepareData();
-} else if (command === 'run-season') {
-  await runSeason();
-} else {
-  console.error('Usage: tsx src/backtest/index.ts <prepare-data|run-season>');
-  process.exitCode = 1;
+  if (command === 'prepare-data') {
+    await prepareData();
+  } else if (command === 'run-season') {
+    await runSeason();
+  } else {
+    console.error('Usage: tsx src/backtest/index.ts <prepare-data|run-season>');
+    process.exitCode = 1;
+  }
+}
+
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+  await main();
 }
