@@ -21,26 +21,46 @@ export function applyGameweekDecision(
   decision: BacktestDecision,
   snapshot: GameweekSnapshot,
 ): ManagerState {
+  if (decision.gameweek !== snapshot.gameweek) {
+    throw new Error(`Decision gameweek ${decision.gameweek} does not match snapshot gameweek ${snapshot.gameweek}`);
+  }
+
+  if (decision.chip && !state.chipsAvailable.includes(decision.chip)) {
+    throw new Error(`Chip ${decision.chip} is not available`);
+  }
+
   const playersById = new Map(snapshot.knownBeforeDeadline.players.map(player => [player.id, player]));
   const resultsByPlayerId = new Map(snapshot.actualResults.playerResults.map(result => [result.playerId, result]));
   const baseSquad = decision.squad ? createSquadFromIds(decision.squad, playersById) : state.squad;
   const baseBank = decision.squad
     ? FPL_RULES.initialBudget - baseSquad.reduce((total, pick) => total + pick.purchasePrice, 0)
     : state.bank;
+  if (baseBank < 0) {
+    throw new Error('Decision is over budget');
+  }
+
   const transfersMade = decision.transfers.length;
-  const transferCost = getTransferHitCost(transfersMade, state.freeTransfers);
+  const transferCost = decision.chip === 'wildcard' || decision.chip === 'freehit'
+    ? 0
+    : getTransferHitCost(transfersMade, state.freeTransfers);
   const { squad, bank } = applyTransfers(baseSquad, baseBank, decision, playersById);
+  if (bank < 0) {
+    throw new Error('Decision is over budget');
+  }
+
   const grossPoints = scorePlayers(decision.startingXi, resultsByPlayerId);
   const captainScore = resultsByPlayerId.get(decision.captain)?.totalPoints ?? 0;
   const captainMultiplier = decision.chip === '3xc' ? 3 : 2;
   const captainPoints = captainScore * (captainMultiplier - 1);
   const benchPoints = scorePlayers(decision.bench, resultsByPlayerId);
-  const points = grossPoints + captainPoints - transferCost;
+  const benchBoostPoints = decision.chip === 'bboost' ? benchPoints : 0;
+  const weeklyGrossPoints = grossPoints + captainPoints + benchBoostPoints;
+  const points = weeklyGrossPoints - transferCost;
   const weeklyResult: WeeklyResult = {
     gameweek: decision.gameweek,
     points,
     transferCost,
-    grossPoints: grossPoints + captainPoints,
+    grossPoints: weeklyGrossPoints,
     captainPoints,
     benchPoints,
     chip: decision.chip,
@@ -86,10 +106,12 @@ function applyTransfers(
 
   for (const transfer of decision.transfers) {
     const outgoing = squad.find(pick => pick.playerId === transfer.out);
-    if (outgoing) {
-      bank += outgoing.sellingPrice;
-      squad = squad.filter(pick => pick.playerId !== transfer.out);
+    if (!outgoing) {
+      throw new Error(`Player ${transfer.out} is not in squad`);
     }
+
+    bank += outgoing.sellingPrice;
+    squad = squad.filter(pick => pick.playerId !== transfer.out);
 
     const incoming = getPlayer(transfer.in, playersById);
     bank -= incoming.price;

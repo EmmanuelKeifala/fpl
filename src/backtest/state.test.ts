@@ -98,3 +98,159 @@ test('applyGameweekDecision accounts for transfers, hits, chip use, and selling 
   assert.equal(next.chipsAvailable.includes('3xc'), false);
   assert.equal(next.freeTransfers, 1);
 });
+
+test('applyGameweekDecision rejects gameweek and snapshot mismatches', () => {
+  assert.throws(() => applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(2)), /snapshot gameweek/i);
+});
+
+test('applyGameweekDecision waives transfer hits for wildcard and freehit', () => {
+  const afterGw1 = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(1));
+
+  const wildcard = applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 3, in: 6 }, { out: 5, in: 3 }],
+    startingXi: [1, 2, 4, 6],
+    bench: [3],
+    captain: 6,
+    viceCaptain: 4,
+    chip: 'wildcard',
+    notes: [],
+  }, snapshot(2));
+
+  const freehit = applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 3, in: 6 }, { out: 5, in: 3 }],
+    startingXi: [1, 2, 4, 6],
+    bench: [3],
+    captain: 6,
+    viceCaptain: 4,
+    chip: 'freehit',
+    notes: [],
+  }, snapshot(2));
+
+  assert.equal(wildcard.weeklyResults[1].transferCost, 0);
+  assert.equal(freehit.weeklyResults[1].transferCost, 0);
+});
+
+test('applyGameweekDecision includes bench points in score when bench boost is active', () => {
+  const next = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    chip: 'bboost',
+    notes: [],
+  }, snapshot(1));
+
+  assert.equal(next.weeklyResults[0].grossPoints, 35);
+  assert.equal(next.weeklyResults[0].points, 35);
+  assert.equal(next.totalPoints, 35);
+});
+
+test('applyGameweekDecision rejects unavailable chips', () => {
+  const afterChip = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    chip: '3xc',
+    notes: [],
+  }, snapshot(1));
+
+  assert.throws(() => applyGameweekDecision(afterChip, {
+    gameweek: 2,
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    chip: '3xc',
+    notes: [],
+  }, snapshot(2)), /chip .*available/i);
+});
+
+test('applyGameweekDecision rejects transfers out of non-squad players', () => {
+  const afterGw1 = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(1));
+
+  assert.throws(() => applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 6, in: 3 }],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(2)), /not in squad/i);
+});
+
+test('applyGameweekDecision rejects over-budget squads and transfers', () => {
+  const expensiveGw1 = snapshot(1);
+  expensiveGw1.knownBeforeDeadline.players = expensiveGw1.knownBeforeDeadline.players.map(player => ({ ...player, price: 250 }));
+
+  assert.throws(() => applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, expensiveGw1), /over budget/i);
+
+  const afterGw1 = applyGameweekDecision(createInitialState('2024-2025'), {
+    gameweek: 1,
+    squad: [1, 2, 3, 4, 5],
+    transfers: [],
+    startingXi: [1, 2, 3, 4],
+    bench: [5],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, snapshot(1));
+  const expensiveGw2 = snapshot(2);
+  expensiveGw2.knownBeforeDeadline.players = expensiveGw2.knownBeforeDeadline.players.map(player => player.id === 6 ? { ...player, price: 1000 } : player);
+
+  assert.throws(() => applyGameweekDecision(afterGw1, {
+    gameweek: 2,
+    transfers: [{ out: 5, in: 6 }],
+    startingXi: [1, 2, 3, 4],
+    bench: [6],
+    captain: 3,
+    viceCaptain: 4,
+    notes: [],
+  }, expensiveGw2), /over budget/i);
+});
