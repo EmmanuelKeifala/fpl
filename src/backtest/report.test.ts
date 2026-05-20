@@ -30,10 +30,13 @@ function state(): ManagerState {
 }
 
 test('buildBacktestReport includes season metrics and provenance', () => {
-  const report = buildBacktestReport(state(), provenance);
+  const report = buildBacktestReport(state(), provenance, 'fair');
 
+  assert.equal(report.strategy, 'fair');
   assert.equal(report.season, '2024-2025');
   assert.equal(report.totalPoints, 100);
+  assert.equal(report.captainPointsTotal, 14);
+  assert.equal(report.benchPointsTotal, 7);
   assert.equal(report.estimatedRankPercentile, null);
   assert.equal(report.weekly.length, 2);
   assert.equal(report.transfers.length, 1);
@@ -66,6 +69,7 @@ test('formatBacktestSummary renders a concise terminal summary', () => {
   const summary = formatBacktestSummary(buildBacktestReport(state(), provenance));
 
   assert.match(summary, /Season: 2024-2025/);
+  assert.match(summary, /Strategy: baseline/);
   assert.match(summary, /Total points: 100/);
   assert.match(summary, /Gameweeks replayed: 2/);
   assert.match(summary, /Squad value: 100\.2m/);

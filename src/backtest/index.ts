@@ -5,10 +5,21 @@ import { BacktestDataSource, getDefaultBacktestCacheDir, type BacktestSourceDesc
 import { BacktestEngine } from './engine.js';
 import { normalizeVaastavSnapshots } from './normalizer.js';
 import { buildBacktestReport, formatBacktestSummary } from './report.js';
+import type { BacktestStrategyName } from './report.js';
 import { FileSnapshotStore } from './snapshots.js';
 import { deterministicStrategy } from './strategies/baseline.js';
+import { createFairStrategy } from './strategies/fair.js';
 
 export { deterministicStrategy } from './strategies/baseline.js';
+
+export interface RunOptions { strategy: BacktestStrategyName; }
+
+export function parseRunOptions(args: string[]): RunOptions {
+  const strategyArg = args.find(arg => arg.startsWith('--strategy='));
+  const strategy = (strategyArg?.split('=')[1] ?? 'baseline') as BacktestStrategyName;
+  if (!['baseline', 'fair', 'oracle'].includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
+  return { strategy };
+}
 
 interface PrepareDataDependencies {
   preparedCacheDir?: string;
@@ -94,17 +105,19 @@ async function removeManifest(preparedCacheDir: string): Promise<void> {
   }
 }
 
-export async function runSeason(): Promise<void> {
+export async function runSeason(options: RunOptions = { strategy: 'baseline' }): Promise<void> {
   const store = new FileSnapshotStore(cacheDir());
   const firstSnapshot = await store.getSnapshot(1);
+  if (options.strategy === 'oracle') throw new Error('Oracle strategy is not wired yet');
+  const strategy = options.strategy === 'fair' ? createFairStrategy() : deterministicStrategy();
   const engine = new BacktestEngine({
     season: SEASON,
     gameweeks: Array.from({ length: 38 }, (_, index) => index + 1),
     getSnapshot: gameweek => store.getSnapshot(gameweek),
-    strategy: deterministicStrategy(),
+    strategy,
   });
   const state = await engine.run();
-  const report = buildBacktestReport(state, firstSnapshot.provenance);
+  const report = buildBacktestReport(state, firstSnapshot.provenance, options.strategy);
   console.log(formatBacktestSummary(report));
   console.log(JSON.stringify(report, null, 2));
 }
@@ -115,7 +128,7 @@ async function main(): Promise<void> {
   if (command === 'prepare-data') {
     await prepareData();
   } else if (command === 'run-season') {
-    await runSeason();
+    await runSeason(parseRunOptions(process.argv.slice(3)));
   } else {
     console.error('Usage: tsx src/backtest/index.ts <prepare-data|run-season>');
     process.exitCode = 1;

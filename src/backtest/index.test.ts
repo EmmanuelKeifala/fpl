@@ -3,7 +3,7 @@ import { access, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { formatPrepareDataMessage, prepareDataWithDependencies } from './index.js';
+import { formatPrepareDataMessage, parseRunOptions, prepareDataWithDependencies } from './index.js';
 
 async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'fpl-index-'));
@@ -43,4 +43,13 @@ test('prepareDataWithDependencies removes manifest when normalization fails', as
 
     await assert.rejects(() => access(join(dir, 'manifest.json')), { code: 'ENOENT' });
   });
+});
+
+test('parseRunOptions defaults to baseline strategy', () => {
+  assert.deepEqual(parseRunOptions([]), { strategy: 'baseline' });
+});
+
+test('parseRunOptions accepts fair and oracle strategies', () => {
+  assert.deepEqual(parseRunOptions(['--strategy=fair']), { strategy: 'fair' });
+  assert.deepEqual(parseRunOptions(['--strategy=oracle']), { strategy: 'oracle' });
 });

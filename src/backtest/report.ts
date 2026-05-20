@@ -1,6 +1,8 @@
 import type { ChipName } from '../strategy/rules.js';
 import type { ManagerState, SnapshotProvenance, WeeklyResult } from './types.js';
 
+export type BacktestStrategyName = 'baseline' | 'fair' | 'oracle';
+
 export interface TransferReportRow {
   gameweek: number;
   out: number;
@@ -14,8 +16,11 @@ export interface ChipReportRow {
 }
 
 export interface BacktestReport {
+  strategy: BacktestStrategyName;
   season: string;
   totalPoints: number;
+  captainPointsTotal: number;
+  benchPointsTotal: number;
   estimatedRankPercentile: number | null;
   weekly: WeeklyResult[];
   transfers: TransferReportRow[];
@@ -26,7 +31,11 @@ export interface BacktestReport {
   provenance: SnapshotProvenance;
 }
 
-export function buildBacktestReport(state: ManagerState, provenance: SnapshotProvenance): BacktestReport {
+export function buildBacktestReport(
+  state: ManagerState,
+  provenance: SnapshotProvenance,
+  strategy: BacktestStrategyName = 'baseline',
+): BacktestReport {
   const transfers = state.decisions.flatMap(decision => decision.transfers.map(transfer => ({
     gameweek: decision.gameweek,
     out: transfer.out,
@@ -41,8 +50,11 @@ export function buildBacktestReport(state: ManagerState, provenance: SnapshotPro
     : lastWeek?.squadValue ?? state.bank;
 
   return {
+    strategy,
     season: state.season,
     totalPoints: state.totalPoints,
+    captainPointsTotal: state.weeklyResults.reduce((total, result) => total + result.captainPoints, 0),
+    benchPointsTotal: state.weeklyResults.reduce((total, result) => total + result.benchPoints, 0),
     estimatedRankPercentile: null,
     weekly: state.weeklyResults,
     transfers,
@@ -60,6 +72,7 @@ export function formatBacktestSummary(report: BacktestReport): string {
 
   return [
     `Season: ${report.season}`,
+    `Strategy: ${report.strategy}`,
     `Total points: ${report.totalPoints}`,
     `Estimated rank percentile: ${rank}`,
     `Gameweeks replayed: ${report.weekly.length}`,
