@@ -72,3 +72,47 @@ test('fair strategy uses bench boost when bench projection is high', async () =>
 
   assert.equal(decision.chip, 'bboost');
 });
+
+test('fair strategy uses free hit when one-week squad projection clears threshold', async () => {
+  const current = legalSquadPlayers().map(candidate => ({ ...candidate, expectedPoints: 2 }));
+  const upgrades = [
+    player(101, 9, 45, 1, 101), player(102, 8, 45, 1, 102),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 103, 9 - index * 0.1, 45, 2, index + 103)),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 108, 10 - index * 0.1, 45, 3, index + 108)),
+    ...Array.from({ length: 3 }, (_, index) => player(index + 113, 9 - index * 0.1, 45, 4, index + 113)),
+  ];
+  const decision = await createFairStrategy({ freeHitThreshold: 20, wildcardThreshold: 999 })({
+    state: stateWithSquad(current, ['freehit', 'bboost', '3xc']),
+    snapshot: {
+      season: '2024-2025', gameweek: 9, deadline: '2024-10-01T10:00:00Z',
+      knownBeforeDeadline: { players: [...current, ...upgrades], fixtures: [], unavailableFields: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    },
+  });
+
+  assert.equal(decision.chip, 'freehit');
+  assert.equal(decision.transfers.length, 15);
+  assert.equal(decision.startingXi.some(playerId => playerId >= 101), true);
+});
+
+test('fair strategy uses wildcard when rebuilt squad projection clears threshold', async () => {
+  const current = legalSquadPlayers().map(candidate => ({ ...candidate, expectedPoints: 2 }));
+  const upgrades = [
+    player(201, 9, 45, 1, 201), player(202, 8, 45, 1, 202),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 203, 9 - index * 0.1, 45, 2, index + 203)),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 208, 10 - index * 0.1, 45, 3, index + 208)),
+    ...Array.from({ length: 3 }, (_, index) => player(index + 213, 9 - index * 0.1, 45, 4, index + 213)),
+  ];
+  const decision = await createFairStrategy({ wildcardThreshold: 20, freeHitThreshold: 999 })({
+    state: stateWithSquad(current, ['wildcard', 'bboost', '3xc']),
+    snapshot: {
+      season: '2024-2025', gameweek: 12, deadline: '2024-11-01T10:00:00Z',
+      knownBeforeDeadline: { players: [...current, ...upgrades], fixtures: [], unavailableFields: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    },
+  });
+
+  assert.equal(decision.chip, 'wildcard');
+  assert.equal(decision.transfers.length, 15);
+  assert.equal(decision.startingXi.some(playerId => playerId >= 201), true);
+});
