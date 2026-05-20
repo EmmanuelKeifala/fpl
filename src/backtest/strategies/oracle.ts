@@ -4,15 +4,16 @@ import type { BacktestStrategy, GameweekSnapshot } from '../types.js';
 
 export function createOracleStrategy(snapshots: GameweekSnapshot[]): BacktestStrategy {
   const snapshotsByGameweek = new Map(snapshots.map(snapshot => [snapshot.gameweek, snapshot]));
-  const tripleCaptainGameweek = findBestTripleCaptainGameweek(snapshots);
+  const initialSquad = snapshotsByGameweek.has(1) ? buildInitialSquad(projectPlayersByActualPoints(snapshotsByGameweek.get(1)!)) : undefined;
+  const tripleCaptainGameweek = initialSquad ? findBestTripleCaptainGameweek(snapshots, initialSquad) : undefined;
 
   return ({ state, snapshot }) => {
     const current = snapshotsByGameweek.get(snapshot.gameweek);
     if (!current) throw new Error(`Oracle snapshot schedule is missing GW${snapshot.gameweek}`);
-    const actualPoints = new Map(current.actualResults.playerResults.map(result => [result.playerId, result.totalPoints]));
-    const oraclePlayers = current.knownBeforeDeadline.players.map(player => ({ ...player, expectedPoints: actualPoints.get(player.id) ?? 0 }));
+    if (!initialSquad) throw new Error('Oracle snapshot schedule is missing GW1');
+    const oraclePlayers = projectPlayersByActualPoints(current);
     const playersById = new Map(oraclePlayers.map(player => [player.id, player]));
-    const squad = current.gameweek === 1 ? buildInitialSquad(oraclePlayers) : undefined;
+    const squad = current.gameweek === 1 ? initialSquad : undefined;
     const lineupPool = squad ?? state.squad.map(pick => pick.playerId);
     const { startingXi, bench } = selectLineup(lineupPool, playersById);
     const { captain, viceCaptain } = selectCaptaincy(startingXi, playersById);
@@ -21,18 +22,26 @@ export function createOracleStrategy(snapshots: GameweekSnapshot[]): BacktestStr
   };
 }
 
-function findBestTripleCaptainGameweek(snapshots: GameweekSnapshot[]): number | undefined {
+function findBestTripleCaptainGameweek(snapshots: GameweekSnapshot[], initialSquad: number[]): number | undefined {
   let bestGameweek: number | undefined;
-  let bestPlayerPoints = -Infinity;
+  let bestCaptainPoints = -Infinity;
 
   for (const snapshot of snapshots) {
-    const actualPoints = new Map(snapshot.actualResults.playerResults.map(result => [result.playerId, result.totalPoints]));
-    const gameweekBest = Math.max(...snapshot.knownBeforeDeadline.players.map(player => actualPoints.get(player.id) ?? 0));
-    if (gameweekBest > bestPlayerPoints) {
+    const oraclePlayers = projectPlayersByActualPoints(snapshot);
+    const playersById = new Map(oraclePlayers.map(player => [player.id, player]));
+    const { startingXi } = selectLineup(initialSquad, playersById);
+    const { captain } = selectCaptaincy(startingXi, playersById);
+    const captainPoints = playersById.get(captain)!.expectedPoints;
+    if (captainPoints > bestCaptainPoints) {
       bestGameweek = snapshot.gameweek;
-      bestPlayerPoints = gameweekBest;
+      bestCaptainPoints = captainPoints;
     }
   }
 
   return bestGameweek;
+}
+
+function projectPlayersByActualPoints(snapshot: GameweekSnapshot) {
+  const actualPoints = new Map(snapshot.actualResults.playerResults.map(result => [result.playerId, result.totalPoints]));
+  return snapshot.knownBeforeDeadline.players.map(player => ({ ...player, expectedPoints: actualPoints.get(player.id) ?? 0 }));
 }

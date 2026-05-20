@@ -36,6 +36,17 @@ test('oracle strategy saves triple captain for the best realized captain week', 
   assert.equal(gw2Decision.chip, '3xc');
 });
 
+test('oracle strategy chooses triple captain week from owned captains only', async () => {
+  const gw1 = snapshot(1, { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 8: 20, 9: 2, 10: 2, 11: 2, 12: 2, 13: 2, 14: 2, 15: 2, 16: 0 });
+  const gw2 = snapshot(2, { 1: 2, 2: 2, 3: 2, 4: 2, 5: 2, 6: 2, 7: 2, 8: 2, 9: 2, 10: 2, 11: 2, 12: 2, 13: 2, 14: 2, 15: 2, 16: 100 });
+  const strategy = createOracleStrategy([gw1, gw2]);
+  const gw1Decision = await strategy({ state: emptyState(), snapshot: gw1 });
+  const gw2Decision = await strategy({ state: { ...emptyState(), squad: gw1Decision.squad!.map(playerId => ({ playerId, purchasePrice: 45, sellingPrice: 45 })) }, snapshot: gw2 });
+  assert.equal(gw1Decision.chip, '3xc');
+  assert.equal(gw2Decision.chip, undefined);
+  assert.equal(gw1Decision.squad!.includes(16), false);
+});
+
 test('oracle strategy requires a full snapshot for the requested gameweek', async () => {
   const strategy = createOracleStrategy([]);
   assert.throws(
