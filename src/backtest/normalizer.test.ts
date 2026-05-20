@@ -157,6 +157,47 @@ test('normalizeVaastavSnapshots aggregates repeated supported element rows', asy
   });
 });
 
+test('normalizeVaastavSnapshots carries previously seen players into later snapshots only', async () => {
+  await withTempDir(async dir => {
+    await writeBaseFiles(dir);
+    await writeFile(
+      join(dir, 'gw-raw-1.csv'),
+      'name,position,team,xP,element,value,selected,minutes,total_points,round,kickoff_time\n' +
+        'Raya,GK,Arsenal,4.5,1,55,1000000,90,6,1,2024-08-16T19:00:00Z\n' +
+        'Saka,MID,Arsenal,6.5,3,100,2000000,90,8,1,2024-08-16T19:00:00Z\n'
+    );
+    await writeFile(
+      join(dir, 'gw-raw-2.csv'),
+      'name,position,team,xP,element,value,selected,minutes,total_points,round,kickoff_time\n' +
+        'Raya,GK,Arsenal,4.0,1,55,1000000,90,5,2,2024-08-24T14:00:00Z\n' +
+        'Gabriel,DEF,Arsenal,4.0,2,60,900000,90,5,2,2024-08-24T14:00:00Z\n'
+    );
+
+    await normalizeVaastavSnapshots({
+      season: '2024-2025',
+      cacheDir: dir,
+      gameweeks: [1, 2],
+      sourceUrls: ['https://example.test/vaastav'],
+      downloadedAt: '2026-05-19T00:00:00.000Z',
+      snapshotVersion: '2024-2025-v1',
+    });
+
+    const store = new FileSnapshotStore(dir);
+    const gw1 = await store.getSnapshot(1);
+    const gw2 = await store.getSnapshot(2);
+    const carriedPlayer = gw2.knownBeforeDeadline.players.find(player => player.id === 3);
+
+    assert.equal(gw1.knownBeforeDeadline.players.some(player => player.id === 2), false);
+    assert.equal(carriedPlayer?.expectedPoints, 0);
+    assert.equal(carriedPlayer?.status, 'u');
+    assert.deepEqual(gw2.actualResults.playerResults.find(result => result.playerId === 3), {
+      playerId: 3,
+      minutes: 0,
+      totalPoints: 0,
+    });
+  });
+});
+
 test('normalizeVaastavSnapshots preserves existing snapshot when required columns are missing', async () => {
   await withTempDir(async dir => {
     await writeBaseFiles(dir);

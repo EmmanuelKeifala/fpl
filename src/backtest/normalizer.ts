@@ -37,6 +37,7 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
   const teamRows = await readOptionalCsv(join(options.cacheDir, 'teams.csv'), 'teams.csv');
   const teamsByName = buildTeamsByName(teamRows);
   const fixturesByGameweek = groupFixturesByGameweek(fixtureRows);
+  const lastKnownPlayerRows = new Map<number, CsvRow>();
   const snapshots: GameweekSnapshot[] = [];
 
   for (const gameweek of options.gameweeks) {
@@ -56,6 +57,7 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
       fixtures,
       teamsByName,
       xpByElement,
+      lastKnownPlayerRows,
     });
     const validation = validateSnapshot(snapshot);
     if (!validation.valid) throw new Error(`Invalid snapshot for GW${gameweek}: ${validation.errors.join('; ')}`);
@@ -140,9 +142,11 @@ function buildSnapshot(input: {
   fixtures: BacktestFixture[];
   teamsByName: Map<string, number>;
   xpByElement: Map<number, number>;
+  lastKnownPlayerRows: Map<number, CsvRow>;
 }): GameweekSnapshot {
   const players: BacktestPlayer[] = [];
   const playerResults: PlayerGameweekResult[] = [];
+  const currentPlayerRows = new Map<number, CsvRow>();
   const playerResultsById = new Map<number, PlayerGameweekResult>();
   const kickoffTimes: string[] = [];
 
@@ -152,16 +156,8 @@ function buildSnapshot(input: {
 
     const playerId = parseNumber(row.element, 'element');
     if (!playerResultsById.has(playerId)) {
-      players.push({
-        id: playerId,
-        webName: row.name,
-        elementType,
-        team: input.teamsByName.get(row.team) ?? fallbackTeamId(row.team),
-        price: parseNumber(row.value, 'value'),
-        status: 'a',
-        selectedByPercent: 0,
-        expectedPoints: input.xpByElement.get(playerId) ?? parseNumber(row.xP, 'xP'),
-      });
+      currentPlayerRows.set(playerId, row);
+      input.lastKnownPlayerRows.set(playerId, row);
       playerResultsById.set(playerId, { playerId, minutes: 0, totalPoints: 0 });
     }
 
@@ -170,7 +166,23 @@ function buildSnapshot(input: {
     playerResult.totalPoints += parseNumber(row.total_points, 'total_points');
     kickoffTimes.push(row.kickoff_time);
   }
-  playerResults.push(...playerResultsById.values());
+
+  for (const [playerId, row] of input.lastKnownPlayerRows) {
+    const currentRow = currentPlayerRows.get(playerId);
+    const sourceRow = currentRow ?? row;
+
+    players.push({
+      id: playerId,
+      webName: sourceRow.name,
+      elementType: POSITION_BY_NAME[sourceRow.position]!,
+      team: input.teamsByName.get(sourceRow.team) ?? fallbackTeamId(sourceRow.team),
+      price: parseNumber(sourceRow.value, 'value'),
+      status: currentRow === undefined ? 'u' : 'a',
+      selectedByPercent: 0,
+      expectedPoints: input.xpByElement.get(playerId) ?? (currentRow === undefined ? 0 : parseNumber(sourceRow.xP, 'xP')),
+    });
+    playerResults.push(playerResultsById.get(playerId) ?? { playerId, minutes: 0, totalPoints: 0 });
+  }
 
   return {
     season: input.options.season,
