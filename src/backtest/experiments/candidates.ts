@@ -1,5 +1,6 @@
 import { selectCaptaincy, selectLineup } from '../strategies/lineup.js';
 import { chooseBestTransfers } from '../strategies/transfers.js';
+import { buildInitialSquad } from '../strategies/baseline.js';
 import type { BacktestDecision, BacktestPlayer, DecisionSnapshotInput, ManagerState, TransferMove } from '../types.js';
 
 export interface CandidateDecision {
@@ -19,6 +20,12 @@ export function buildCandidateDecisions(input: CandidateBuildInput): CandidateDe
   const maxCandidates = input.maxCandidates ?? 5;
   const playersById = new Map(input.snapshot.knownBeforeDeadline.players.map(player => [player.id, player]));
   const currentIds = input.state.squad.map(pick => pick.playerId);
+  if (input.snapshot.gameweek === 1) {
+    const squad = buildInitialSquad(input.snapshot.knownBeforeDeadline.players);
+    const candidate = buildCandidate('initial-squad', 'Initial squad', input.snapshot.gameweek, squad, [], playersById);
+    candidate.decision.squad = squad;
+    return [candidate];
+  }
   const candidates: CandidateDecision[] = [buildCandidate('hold', 'Hold squad', input.snapshot.gameweek, currentIds, [], playersById)];
 
   const transferChoice = chooseBestTransfers({

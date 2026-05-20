@@ -46,6 +46,21 @@ test('buildCandidateDecisions includes hold and transfer candidates', () => {
   assert.deepEqual(candidates.map(candidate => candidate.decision.transfers), [[], [{ out: 12, in: 99 }]]);
 });
 
+test('buildCandidateDecisions creates an initial squad candidate in GW1', () => {
+  const players = legalSquadPlayers();
+  const candidates = buildCandidateDecisions({
+    state: { ...stateWithSquad([]), bank: 1000 },
+    snapshot: {
+      season: '2024-2025', gameweek: 1, deadline: '2024-08-16T17:30:00Z',
+      knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    },
+  });
+
+  assert.equal(candidates[0]?.decision.squad?.length, 15);
+  assert.equal(candidates[0]?.decision.startingXi.length, 11);
+});
+
 test('createHybridStrategy returns the ranker selected candidate unchanged', async () => {
   const squad = legalSquadPlayers();
   const replacement = player(99, 12, 45, 3, 99);
