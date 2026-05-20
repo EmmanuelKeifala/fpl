@@ -98,9 +98,12 @@ export function deterministicStrategy(): BacktestStrategy {
     const playersById = new Map(snapshot.knownBeforeDeadline.players.map(player => [player.id, player]));
     const squad = snapshot.gameweek === 1 ? buildInitialSquad(snapshot.knownBeforeDeadline.players) : undefined;
     const lineupPool = squad ?? state.squad.map(pick => pick.playerId);
-    const orderedLineup = rankPlayerIds(lineupPool, playersById);
-    const startingXi = orderedLineup.slice(0, FPL_RULES.startingSize);
-    const bench = orderedLineup.slice(FPL_RULES.startingSize);
+    const startingXi = selectStartingXi(lineupPool, playersById);
+    const startingIds = new Set(startingXi);
+    const bench = rankPlayerIds(
+      lineupPool.filter(playerId => !startingIds.has(playerId)),
+      playersById
+    );
 
     return {
       gameweek: snapshot.gameweek,
@@ -113,6 +116,62 @@ export function deterministicStrategy(): BacktestStrategy {
       notes: ['Deterministic baseline strategy for replay plumbing'],
     };
   };
+}
+
+function selectStartingXi(playerIds: number[], playersById: Map<number, BacktestPlayer>): number[] {
+  const players = playerIds.map(playerId => {
+    const player = playersById.get(playerId);
+    if (!player) throw new Error(`Player ${playerId} is missing from gameweek snapshot`);
+    return player;
+  });
+  const rankedByPosition = new Map<PositionKey, BacktestPlayer[]>();
+  for (const position of Object.keys(FPL_RULES.squadComposition) as PositionKey[]) {
+    rankedByPosition.set(
+      position,
+      rankPlayers(players.filter(player => POSITION_BY_ELEMENT_TYPE[player.elementType] === position))
+    );
+  }
+
+  let bestStartingXi: BacktestPlayer[] | undefined;
+  let bestScore = -Infinity;
+  const goalkeeperCount = FPL_RULES.formation.goalkeeper.min;
+
+  for (let defenderCount = FPL_RULES.formation.defender.min; defenderCount <= FPL_RULES.formation.defender.max; defenderCount++) {
+    for (let midfielderCount = FPL_RULES.formation.midfielder.min; midfielderCount <= FPL_RULES.formation.midfielder.max; midfielderCount++) {
+      const forwardCount = FPL_RULES.startingSize - goalkeeperCount - defenderCount - midfielderCount;
+      if (forwardCount < FPL_RULES.formation.forward.min || forwardCount > FPL_RULES.formation.forward.max) continue;
+
+      const candidate = [
+        ...topRanked(rankedByPosition, 'goalkeeper', goalkeeperCount),
+        ...topRanked(rankedByPosition, 'defender', defenderCount),
+        ...topRanked(rankedByPosition, 'midfielder', midfielderCount),
+        ...topRanked(rankedByPosition, 'forward', forwardCount),
+      ];
+      if (candidate.length !== FPL_RULES.startingSize) continue;
+
+      const orderedCandidate = rankPlayers(candidate);
+      const score = orderedCandidate.reduce((total, player) => total + player.expectedPoints, 0);
+      if (!bestStartingXi || score > bestScore || (score === bestScore && comparePlayerLists(orderedCandidate, bestStartingXi) < 0)) {
+        bestStartingXi = orderedCandidate;
+        bestScore = score;
+      }
+    }
+  }
+
+  if (!bestStartingXi) throw new Error('No deterministic starting XI satisfies formation rules');
+  return bestStartingXi.map(player => player.id);
+}
+
+function topRanked(rankedByPosition: Map<PositionKey, BacktestPlayer[]>, position: PositionKey, count: number): BacktestPlayer[] {
+  const players = rankedByPosition.get(position) ?? [];
+  return players.length >= count ? players.slice(0, count) : [];
+}
+
+function comparePlayerLists(left: BacktestPlayer[], right: BacktestPlayer[]): number {
+  for (let index = 0; index < Math.min(left.length, right.length); index++) {
+    if (left[index]!.id !== right[index]!.id) return left[index]!.id - right[index]!.id;
+  }
+  return left.length - right.length;
 }
 
 function buildInitialSquad(players: BacktestPlayer[]): number[] {

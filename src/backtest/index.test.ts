@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import { FPL_RULES } from '../strategy/rules.js';
-import { validateSquad } from '../strategy/squad.js';
+import { validateFormation, validateSquad } from '../strategy/squad.js';
 import { deterministicStrategy, formatPrepareDataMessage, prepareDataWithDependencies } from './index.js';
 import type { BacktestPlayer, ManagerState } from './types.js';
 
@@ -44,7 +44,14 @@ async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {
 }
 
 test('deterministicStrategy starts only owned players after GW1', async () => {
-  const ownedPlayerIds = Array.from({ length: 15 }, (_, index) => index + 1);
+  const ownedPlayers = [
+    player(1, 1, 50, 1),
+    player(2, 2, 50, 1),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 3, index + 3, 50, 2)),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 8, index + 8, 50, 3)),
+    ...Array.from({ length: 3 }, (_, index) => player(index + 13, index + 13, 50, 4)),
+  ];
+  const ownedPlayerIds = ownedPlayers.map(candidate => candidate.id);
   const decision = await deterministicStrategy()({
     state: stateWithSquad(ownedPlayerIds),
     snapshot: {
@@ -52,7 +59,7 @@ test('deterministicStrategy starts only owned players after GW1', async () => {
       gameweek: 2,
       deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: {
-        players: [player(99, 99, 50), ...ownedPlayerIds.map(id => player(id, id, 50))],
+        players: [player(99, 99, 50), ...ownedPlayers],
         fixtures: [],
         unavailableFields: [],
       },
@@ -129,6 +136,32 @@ test('deterministicStrategy builds a legal GW1 squad composition and respects cl
 
   assert.deepEqual(validation.errors, []);
   assert.equal(squad.filter(playerId => playersById.get(playerId)?.team === 1).length, FPL_RULES.maxPlayersPerClub);
+});
+
+test('deterministicStrategy starts a legal formation when backup goalkeeper is highly ranked', async () => {
+  const players = [
+    player(1, 100, 45, 1),
+    player(2, 99, 45, 1),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 3, 80 - index, 45, 2)),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 8, 70 - index, 45, 3)),
+    ...Array.from({ length: 3 }, (_, index) => player(index + 13, 60 - index, 45, 4)),
+  ];
+  const decision = await deterministicStrategy()({
+    state: stateWithSquad(players.map(candidate => candidate.id)),
+    snapshot: {
+      season: '2024-2025',
+      gameweek: 2,
+      deadline: '2024-08-24T10:00:00Z',
+      knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    },
+  });
+
+  const startingPlayers = decision.startingXi.map(playerId => players.find(candidate => candidate.id === playerId)!);
+  const formation = validateFormation(startingPlayers.map(candidate => candidate.elementType));
+
+  assert.equal(startingPlayers.filter(candidate => candidate.elementType === 1).length, 1);
+  assert.deepEqual(formation.errors, []);
 });
 
 test('formatPrepareDataMessage says replay snapshots are prepared', () => {
