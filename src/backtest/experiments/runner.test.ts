@@ -19,15 +19,17 @@ test('parseExperimentOptions defaults to dry safe smoke matrix', () => {
   assert.deepEqual(parseExperimentOptions([]), {
     seasons: ['2021-2022', '2022-2023', '2023-2024', '2024-2025'],
     allowLlmNews: false,
+    liveNews: false,
     cacheDir: 'data/experiments',
     maxConfigs: 3,
   });
 });
 
 test('parseExperimentOptions accepts season list and LLM news opt in', () => {
-  assert.deepEqual(parseExperimentOptions(['--seasons=2023-2024,2024-2025', '--allow-llm-news', '--cache-dir=/tmp/fpl-exp', '--max-configs=1']), {
+  assert.deepEqual(parseExperimentOptions(['--seasons=2023-2024,2024-2025', '--allow-llm-news', '--live-news', '--cache-dir=/tmp/fpl-exp', '--max-configs=1']), {
     seasons: ['2023-2024', '2024-2025'],
     allowLlmNews: true,
+    liveNews: true,
     cacheDir: '/tmp/fpl-exp',
     maxConfigs: 1,
   });

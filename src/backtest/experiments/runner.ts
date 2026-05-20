@@ -14,6 +14,7 @@ export type ExperimentMode = 'fair' | NewsMode;
 export interface ExperimentOptions {
   seasons: string[];
   allowLlmNews: boolean;
+  liveNews: boolean;
   cacheDir: string;
   maxConfigs: number;
 }
@@ -47,6 +48,7 @@ export function parseExperimentOptions(args: string[]): ExperimentOptions {
   return {
     seasons: seasonsArg ? seasonsArg.split('=')[1]!.split(',').filter(Boolean) : DEFAULT_SEASONS,
     allowLlmNews: args.includes('--allow-llm-news'),
+    liveNews: args.includes('--live-news'),
     cacheDir: cacheArg?.split('=')[1] ?? 'data/experiments',
     maxConfigs,
   };
@@ -76,7 +78,7 @@ export async function runExperimentMatrix(options: ExperimentOptions): Promise<E
   const rows: ExperimentRow[] = [];
   for (const season of options.seasons) {
     for (const mode of modes.slice(0, options.maxConfigs)) {
-      rows.push(await runExperimentSeason(season, mode, options.cacheDir));
+      rows.push(await runExperimentSeason(season, mode, options.cacheDir, options.liveNews));
     }
   }
   const summary = buildExperimentSummary(rows);
@@ -85,7 +87,7 @@ export async function runExperimentMatrix(options: ExperimentOptions): Promise<E
   return summary;
 }
 
-async function runExperimentSeason(season: string, mode: ExperimentMode, cacheDir: string): Promise<ExperimentRow> {
+async function runExperimentSeason(season: string, mode: ExperimentMode, cacheDir: string, liveNews: boolean): Promise<ExperimentRow> {
   const snapshotStore = new FileSnapshotStore(getDefaultBacktestCacheDir(season));
   const firstSnapshot = await snapshotStore.getSnapshot(1);
   const warnings: string[] = [];
@@ -96,6 +98,10 @@ async function runExperimentSeason(season: string, mode: ExperimentMode, cacheDi
       configId: 'smoke',
       ranker: createCachedRanker({ cacheDir }),
       getNews: async ({ snapshot }) => {
+        if (!liveNews) {
+          warnings.push(`${season} GW${snapshot.gameweek}: Live news disabled; run with --live-news to fetch historical articles.`);
+          return [];
+        }
         const context = await getNewsContext({ cacheDir: join(cacheDir, 'news'), season, gameweek: snapshot.gameweek, deadline: snapshot.deadline, mode });
         warnings.push(...context.warnings.map(warning => `${season} GW${snapshot.gameweek}: ${warning}`));
         return context.items;
