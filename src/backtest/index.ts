@@ -10,6 +10,7 @@ import { FileSnapshotStore } from './snapshots.js';
 import { deterministicStrategy } from './strategies/baseline.js';
 import { createFairStrategy } from './strategies/fair.js';
 import { createOracleStrategy } from './strategies/oracle.js';
+import { formatExperimentSummary, parseExperimentOptions, runExperimentMatrix } from './experiments/runner.js';
 
 export { deterministicStrategy } from './strategies/baseline.js';
 
@@ -21,6 +22,13 @@ export function parseRunOptions(args: string[]): RunOptions {
   const strategy = (strategyArg?.split('=')[1] ?? 'baseline') as BacktestStrategyName;
   if (!['baseline', 'fair', 'oracle'].includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
   return { strategy, season: parseSeason(seasonArg?.split('=')[1] ?? DEFAULT_SEASON) };
+}
+
+export type TopLevelCommand = 'prepare-data' | 'run-season' | 'run-experiment';
+
+export function parseTopLevelCommand(command: string | undefined): TopLevelCommand | undefined {
+  if (command === 'prepare-data' || command === 'run-season' || command === 'run-experiment') return command;
+  return undefined;
 }
 
 interface PrepareDataDependencies {
@@ -156,14 +164,18 @@ export async function runSeason(options: RunOptions = { strategy: 'baseline', se
 }
 
 async function main(): Promise<void> {
-  const command = process.argv[2];
+  const command = parseTopLevelCommand(process.argv[2]);
 
   if (command === 'prepare-data') {
     await prepareData(parseRunOptions(process.argv.slice(3)));
   } else if (command === 'run-season') {
     await runSeason(parseRunOptions(process.argv.slice(3)));
+  } else if (command === 'run-experiment') {
+    const summary = await runExperimentMatrix(parseExperimentOptions(process.argv.slice(3)));
+    console.log(formatExperimentSummary(summary));
+    console.log(JSON.stringify(summary, null, 2));
   } else {
-    console.error('Usage: tsx src/backtest/index.ts <prepare-data|run-season>');
+    console.error('Usage: tsx src/backtest/index.ts <prepare-data|run-season|run-experiment>');
     process.exitCode = 1;
   }
 }
