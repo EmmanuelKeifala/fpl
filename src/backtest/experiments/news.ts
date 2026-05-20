@@ -107,5 +107,5 @@ function parseGdeltDate(value?: string): string | undefined {
 }
 
 function formatGdeltDate(date: Date): string {
-  return date.toISOString().replace(/[-:]/g, '').replace(/\.\d{3}Z$/, 'Z');
+  return date.toISOString().replace(/[-:]/g, '').replace('T', '').replace(/\.\d{3}Z$/, '');
 }

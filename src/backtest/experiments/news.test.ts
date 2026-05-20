@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
-import { getNewsContext } from './news.js';
+import { fetchGdeltNews, getNewsContext } from './news.js';
 
 async function withTempDir(run: (dir: string) => Promise<void>): Promise<void> {
   const dir = await mkdtemp(join(tmpdir(), 'fpl-news-'));
@@ -81,4 +81,28 @@ test('getNewsContext returns warnings when news fetch fails', async () => {
     assert.deepEqual(context.items, []);
     assert.equal(context.warnings.some(warning => warning.includes('network down')), true);
   });
+});
+
+test('fetchGdeltNews formats GDELT datetimes without ISO separators', async () => {
+  const originalFetch = globalThis.fetch;
+  let requestedUrl = '';
+  globalThis.fetch = (async (url: string | URL | Request) => {
+    requestedUrl = String(url);
+    return new Response(JSON.stringify({ articles: [] }), { status: 200, headers: { 'content-type': 'application/json' } });
+  }) as typeof fetch;
+  try {
+    await fetchGdeltNews({
+      cacheDir: '/tmp/unused',
+      season: '2024-2025',
+      gameweek: 2,
+      deadline: '2024-08-24T10:00:00Z',
+      mode: 'llm-news-strict',
+    });
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  const parsed = new URL(requestedUrl);
+  assert.match(parsed.searchParams.get('startdatetime') ?? '', /^\d{14}$/);
+  assert.match(parsed.searchParams.get('enddatetime') ?? '', /^\d{14}$/);
 });
