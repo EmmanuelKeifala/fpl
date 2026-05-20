@@ -45,11 +45,16 @@ test('prepareDataWithDependencies removes manifest when normalization fails', as
   });
 });
 
-test('parseRunOptions defaults to baseline strategy', () => {
-  assert.deepEqual(parseRunOptions([]), { strategy: 'baseline' });
+test('parseRunOptions defaults to baseline strategy and default season', () => {
+  assert.deepEqual(parseRunOptions([]), { strategy: 'baseline', season: '2024-2025' });
 });
 
-test('parseRunOptions accepts fair and oracle strategies', () => {
-  assert.deepEqual(parseRunOptions(['--strategy=fair']), { strategy: 'fair' });
-  assert.deepEqual(parseRunOptions(['--strategy=oracle']), { strategy: 'oracle' });
+test('parseRunOptions accepts fair and oracle strategies with explicit season', () => {
+  assert.deepEqual(parseRunOptions(['--strategy=fair', '--season=2023-2024']), { strategy: 'fair', season: '2023-2024' });
+  assert.deepEqual(parseRunOptions(['--strategy=oracle', '--season=2023-2024']), { strategy: 'oracle', season: '2023-2024' });
+});
+
+test('parseRunOptions rejects malformed seasons', () => {
+  assert.throws(() => parseRunOptions(['--season=2023-24']), /invalid season/i);
+  assert.throws(() => parseRunOptions(['--season=2023-2025']), /invalid season/i);
 });
