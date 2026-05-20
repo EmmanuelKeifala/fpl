@@ -76,6 +76,7 @@ export class BacktestDataSource {
         }
       } catch (error) {
         if (!source.optional) throw error;
+        await this.removeSourceFile(source.fileName);
       }
     }
 
@@ -105,6 +106,14 @@ export class BacktestDataSource {
   private async removeManifest(): Promise<void> {
     try {
       await unlink(join(this.options.cacheDir, 'manifest.json'));
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
+    }
+  }
+
+  private async removeSourceFile(fileName: string): Promise<void> {
+    try {
+      await unlink(join(this.options.cacheDir, fileName));
     } catch (error) {
       if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
     }

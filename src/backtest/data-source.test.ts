@@ -117,3 +117,31 @@ test('BacktestDataSource writes named JSON and text sources', async () => {
     await rm(dir, { recursive: true, force: true });
   }
 });
+
+test('BacktestDataSource removes stale files for failed optional sources', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'fpl-data-source-'));
+  try {
+    await writeFile(join(dir, 'xp-raw-5.csv'), 'id,xP\n1,99\n');
+    const dataSource = new BacktestDataSource({
+      season: '2024-2025',
+      cacheDir: dir,
+      sourceUrls: [],
+      sources: [
+        { url: 'https://example.test/xP5.csv', fileName: 'xp-raw-5.csv', format: 'text', optional: true },
+      ],
+      fetchText: async () => {
+        throw new Error('optional unavailable');
+      },
+    });
+
+    await dataSource.prepare();
+
+    await assert.rejects(() => readFile(join(dir, 'xp-raw-5.csv'), 'utf8'), (error: NodeJS.ErrnoException) => {
+      assert.equal(error.code, 'ENOENT');
+      return true;
+    });
+    assert.equal(await dataSource.hasPreparedDataset(), true);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
+});
