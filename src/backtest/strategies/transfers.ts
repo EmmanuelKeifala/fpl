@@ -1,4 +1,4 @@
-import { FPL_RULES, POSITION_BY_ELEMENT_TYPE } from '../../strategy/rules.js';
+import { calculateSellingPrice, FPL_RULES, POSITION_BY_ELEMENT_TYPE } from '../../strategy/rules.js';
 import { validateSquad } from '../../strategy/squad.js';
 import type { BacktestPlayer, SquadPick, TransferMove } from '../types.js';
 
@@ -28,7 +28,8 @@ export function chooseBestTransfers(input: TransferChoiceInput): TransferChoice 
     if (!outgoingPlayer) continue;
     for (const incoming of candidates) {
       if (incoming.elementType !== outgoingPlayer.elementType) continue;
-      const bankAfter = input.bank + outgoing.sellingPrice - incoming.price;
+      const sellingPrice = calculateSellingPrice(outgoing.purchasePrice, outgoingPlayer.price);
+      const bankAfter = input.bank + sellingPrice - incoming.price;
       if (bankAfter < 0) continue;
       const finalPlayers = input.squad
         .filter(pick => pick.playerId !== outgoing.playerId)

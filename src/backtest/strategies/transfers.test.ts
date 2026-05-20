@@ -39,3 +39,21 @@ test('chooseBestTransfers refuses a hit below threshold', () => {
 
   assert.deepEqual(result.transfers, []);
 });
+
+test('chooseBestTransfers uses refreshed selling price for affordability', () => {
+  const players = [
+    player(1, 4, 45, 1), player(2, 4, 45, 1),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 3, 4, 45, 2)),
+    ...Array.from({ length: 5 }, (_, index) => player(index + 8, index === 4 ? 2 : 4, index === 4 ? 50 : 45, 3)),
+    ...Array.from({ length: 3 }, (_, index) => player(index + 13, 4, 45, 4)),
+    player(99, 12, 55, 3, 99),
+  ];
+  const squad = players
+    .filter(candidate => candidate.id <= 15)
+    .map(candidate => candidate.id === 12
+      ? { playerId: candidate.id, purchasePrice: 50, sellingPrice: 55 }
+      : pick(candidate.id, candidate.price));
+  const result = chooseBestTransfers({ squad, bank: 0, freeTransfers: 1, players, maxCandidatesPerPosition: 10, hitThreshold: 4.5 });
+
+  assert.deepEqual(result.transfers, []);
+});
