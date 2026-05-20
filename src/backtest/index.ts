@@ -9,6 +9,7 @@ import type { BacktestStrategyName } from './report.js';
 import { FileSnapshotStore } from './snapshots.js';
 import { deterministicStrategy } from './strategies/baseline.js';
 import { createFairStrategy } from './strategies/fair.js';
+import { createOracleStrategy } from './strategies/oracle.js';
 
 export { deterministicStrategy } from './strategies/baseline.js';
 
@@ -108,8 +109,14 @@ async function removeManifest(preparedCacheDir: string): Promise<void> {
 export async function runSeason(options: RunOptions = { strategy: 'baseline' }): Promise<void> {
   const store = new FileSnapshotStore(cacheDir());
   const firstSnapshot = await store.getSnapshot(1);
-  if (options.strategy === 'oracle') throw new Error('Oracle strategy is not wired yet');
-  const strategy = options.strategy === 'fair' ? createFairStrategy() : deterministicStrategy();
+  const snapshots = options.strategy === 'oracle'
+    ? await Promise.all(Array.from({ length: 38 }, (_, index) => store.getSnapshot(index + 1)))
+    : [];
+  const strategy = options.strategy === 'fair'
+    ? createFairStrategy()
+    : options.strategy === 'oracle'
+      ? createOracleStrategy(snapshots)
+      : deterministicStrategy();
   const engine = new BacktestEngine({
     season: SEASON,
     gameweeks: Array.from({ length: 38 }, (_, index) => index + 1),
