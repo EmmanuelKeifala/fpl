@@ -7,14 +7,12 @@ export type RankerProvider = (input: HybridRankerInput) => Promise<HybridRankerR
 
 export interface CachedRankerOptions {
   cacheDir: string;
-  model?: string;
   provider?: RankerProvider;
 }
 
 export function createCachedRanker(options: CachedRankerOptions): HybridRanker {
-  const model = options.model ?? process.env.OPENAI_MODEL ?? 'gpt-4o-mini';
   return async input => {
-    const cachePath = rankerCachePath(options.cacheDir, model, input);
+    const cachePath = rankerCachePath(options.cacheDir, input);
     try {
       return validateSelection(JSON.parse(await readFile(cachePath, 'utf8')) as HybridRankerResult, input);
     } catch (error) {
@@ -23,7 +21,7 @@ export function createCachedRanker(options: CachedRankerOptions): HybridRanker {
       }
     }
 
-    const provider = options.provider ?? (process.env.OPENAI_API_KEY ? openAiProvider(model) : deterministicFallbackProvider);
+    const provider = options.provider ?? (process.env.OPENAI_API_KEY ? openAiProvider() : deterministicFallbackProvider);
     const result = await selectWithFallback(provider, input);
     await mkdir(join(options.cacheDir, 'ranker'), { recursive: true });
     await writeFile(cachePath, `${JSON.stringify(result, null, 2)}\n`);
@@ -62,7 +60,7 @@ function bestProjectedCandidate(input: HybridRankerInput) {
   return [...input.candidates].sort((a, b) => b.projectedPoints - a.projectedPoints || a.id.localeCompare(b.id))[0]!;
 }
 
-function openAiProvider(model: string): RankerProvider {
+function openAiProvider(): RankerProvider {
   return async input => {
     const candidateIds = input.candidates.map(candidate => candidate.id);
     const response = await fetch('https://api.openai.com/v1/responses', {
@@ -72,9 +70,10 @@ function openAiProvider(model: string): RankerProvider {
         Authorization: `Bearer ${process.env.OPENAI_API_KEY}`,
       },
       body: JSON.stringify({
-        model,
+        model: input.config.model,
+        temperature: input.temperature,
         input: [
-          { role: 'system', content: 'You rank legal Fantasy Premier League backtest candidates. Return only JSON with candidateId and explanation.' },
+          { role: 'system', content: `You rank legal Fantasy Premier League backtest candidates. Return only JSON with candidateId and explanation. Strategy bias: ${input.config.promptBias}` },
           { role: 'user', content: JSON.stringify(compactRankerInput(input)) },
         ],
         text: {
@@ -109,6 +108,14 @@ function compactRankerInput(input: HybridRankerInput) {
     gameweek: input.snapshot.gameweek,
     mode: input.mode,
     configId: input.configId,
+    config: {
+      id: input.config.id,
+      promptBias: input.config.promptBias,
+      preferDifferentials: input.config.preferDifferentials,
+      newsSensitivity: input.config.newsSensitivity,
+    },
+    stochastic: input.stochastic,
+    runId: input.runId,
     candidates: input.candidates.map(candidate => ({
       id: candidate.id,
       label: candidate.label,
@@ -116,12 +123,15 @@ function compactRankerInput(input: HybridRankerInput) {
       transfers: candidate.decision.transfers,
       captain: candidate.decision.captain,
       chip: candidate.decision.chip,
+      selectedByPercent: candidate.decision.startingXi
+        .map(playerId => input.snapshot.knownBeforeDeadline.players.find(player => player.id === playerId)?.selectedByPercent ?? 0)
+        .reduce((total, value) => total + value, 0),
     })),
     news: input.news,
   };
 }
 
-function rankerCachePath(cacheDir: string, model: string, input: HybridRankerInput): string {
-  const hash = createHash('sha256').update(JSON.stringify({ model, input: compactRankerInput(input) })).digest('hex').slice(0, 24);
+function rankerCachePath(cacheDir: string, input: HybridRankerInput): string {
+  const hash = createHash('sha256').update(JSON.stringify({ model: input.config.model, temperature: input.temperature, input: compactRankerInput(input) })).digest('hex').slice(0, 24);
   return join(cacheDir, 'ranker', `${input.snapshot.season}-gw${input.snapshot.gameweek}-${input.mode}-${input.configId}-${hash}.json`);
 }

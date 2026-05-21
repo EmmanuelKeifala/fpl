@@ -38,6 +38,21 @@ function rankerInput() {
     news: [],
     mode: 'llm-news-strict' as const,
     configId: 'smoke',
+    config: {
+      id: 'aggressive' as const,
+      promptBias: 'Prefer upside.',
+      model: 'test-model',
+      deterministicTemperature: 0,
+      stochasticTemperature: 0.7,
+      candidateCount: 6,
+      allowHits: true,
+      hitThreshold: 3.5,
+      preferDifferentials: false,
+      newsSensitivity: 'normal' as const,
+    },
+    temperature: 0.7,
+    stochastic: true,
+    runId: 'abc12345',
   };
 }
 
@@ -69,6 +84,20 @@ test('createCachedRanker falls back when provider selects invalid candidate', as
 
     assert.equal(result.candidateId, 'best-transfer');
     assert.match(result.explanation, /fallback/i);
+  });
+});
+
+test('createCachedRanker preserves fallback explanations for report telemetry', async () => {
+  await withTempDir(async cacheDir => {
+    const ranker = createCachedRanker({
+      cacheDir,
+      provider: async () => ({ candidateId: 'missing', explanation: 'bad choice' }),
+    });
+
+    const result = await ranker(rankerInput());
+
+    assert.equal(result.candidateId, 'best-transfer');
+    assert.match(result.explanation, /provider returned invalid candidate missing/i);
   });
 });
 
@@ -113,6 +142,9 @@ test('createCachedRanker constrains OpenAI output to candidate id schema', async
       const result = await ranker(rankerInput());
 
       assert.equal(result.candidateId, 'best-transfer');
+      assert.equal(requestBody.model, 'test-model');
+      assert.equal(requestBody.temperature, 0.7);
+      assert.match(requestBody.input[0].content, /Prefer upside/);
       assert.deepEqual(requestBody.text.format.schema.properties.candidateId.enum, ['hold', 'best-transfer']);
       assert.equal(requestBody.text.format.strict, true);
     } finally {
@@ -120,5 +152,44 @@ test('createCachedRanker constrains OpenAI output to candidate id schema', async
       if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
       else process.env.OPENAI_API_KEY = originalKey;
     }
+  });
+});
+
+test('createCachedRanker includes stochastic run id in cache identity', async () => {
+  await withTempDir(async cacheDir => {
+    let calls = 0;
+    const ranker = createCachedRanker({
+      cacheDir,
+      provider: async () => {
+        calls++;
+        return { candidateId: 'best-transfer', explanation: `choice ${calls}` };
+      },
+    });
+
+    await ranker({ ...rankerInput(), runId: 'run-one' });
+    await ranker({ ...rankerInput(), runId: 'run-two' });
+
+    assert.equal(calls, 2);
+  });
+});
+
+test('createCachedRanker includes prompt bias in cache identity', async () => {
+  await withTempDir(async cacheDir => {
+    let calls = 0;
+    const ranker = createCachedRanker({
+      cacheDir,
+      provider: async () => {
+        calls++;
+        return { candidateId: 'best-transfer', explanation: `choice ${calls}` };
+      },
+    });
+
+    await ranker(rankerInput());
+    await ranker({
+      ...rankerInput(),
+      config: { ...rankerInput().config, promptBias: 'Prefer safety.' },
+    });
+
+    assert.equal(calls, 2);
   });
 });
