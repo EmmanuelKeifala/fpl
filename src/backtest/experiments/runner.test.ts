@@ -1,5 +1,6 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
+import { createRunId, selectExperimentConfigs } from './configs.js';
 import { buildExperimentSummary, parseExperimentOptions } from './runner.js';
 
 test('buildExperimentSummary aggregates averages and fair deltas', () => {
@@ -33,6 +34,18 @@ test('parseExperimentOptions accepts season list and LLM news opt in', () => {
     cacheDir: '/tmp/fpl-exp',
     maxConfigs: 1,
   });
+});
+
+test('selectExperimentConfigs returns stable default config order', () => {
+  assert.deepEqual(selectExperimentConfigs(3).map(config => config.id), ['balanced', 'aggressive', 'conservative']);
+});
+
+test('selectExperimentConfigs rejects invalid max config counts', () => {
+  assert.throws(() => selectExperimentConfigs(0), /Invalid max configs/);
+});
+
+test('createRunId returns a short lowercase id', () => {
+  assert.match(createRunId(), /^[a-z0-9]{8}$/);
 });
 
 function row(season: string, mode: 'fair' | 'llm-news-strict' | 'llm-news-loose', configId: string, totalPoints: number) {
