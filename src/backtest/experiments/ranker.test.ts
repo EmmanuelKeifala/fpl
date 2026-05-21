@@ -158,3 +158,24 @@ test('createCachedRanker includes stochastic run id in cache identity', async ()
     assert.equal(calls, 2);
   });
 });
+
+test('createCachedRanker includes prompt bias in cache identity', async () => {
+  await withTempDir(async cacheDir => {
+    let calls = 0;
+    const ranker = createCachedRanker({
+      cacheDir,
+      provider: async () => {
+        calls++;
+        return { candidateId: 'best-transfer', explanation: `choice ${calls}` };
+      },
+    });
+
+    await ranker(rankerInput());
+    await ranker({
+      ...rankerInput(),
+      config: { ...rankerInput().config, promptBias: 'Prefer safety.' },
+    });
+
+    assert.equal(calls, 2);
+  });
+});

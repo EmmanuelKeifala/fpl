@@ -110,6 +110,7 @@ function compactRankerInput(input: HybridRankerInput) {
     configId: input.configId,
     config: {
       id: input.config.id,
+      promptBias: input.config.promptBias,
       preferDifferentials: input.config.preferDifferentials,
       newsSensitivity: input.config.newsSensitivity,
     },
