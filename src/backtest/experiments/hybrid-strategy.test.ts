@@ -1,6 +1,7 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
 import { buildCandidateDecisions } from './candidates.js';
+import { EXPERIMENT_CONFIGS } from './configs.js';
 import { createHybridStrategy } from './hybrid-strategy.js';
 import type { BacktestPlayer, ManagerState } from '../types.js';
 
@@ -133,6 +134,9 @@ test('createHybridStrategy returns the ranker selected candidate unchanged', asy
   const squad = legalSquadPlayers();
   const replacement = player(99, 12, 45, 3, 99);
   const strategy = createHybridStrategy({
+    config: EXPERIMENT_CONFIGS[0]!,
+    temperature: 0,
+    stochastic: false,
     ranker: async input => ({ candidateId: input.candidates[1]!.id, explanation: 'higher expected points' }),
   });
   const decision = await strategy({
@@ -145,5 +149,5 @@ test('createHybridStrategy returns the ranker selected candidate unchanged', asy
   });
 
   assert.deepEqual(decision.transfers, [{ out: 12, in: 99 }]);
-  assert.equal(decision.notes.includes('LLM hybrid selected: higher expected points'), true);
+  assert.equal(decision.notes.some(note => note.includes('LLM hybrid selected transfer-1: higher expected points')), true);
 });
