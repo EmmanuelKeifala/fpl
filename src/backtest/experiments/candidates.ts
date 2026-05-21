@@ -22,6 +22,7 @@ export interface CandidateBuildInput {
 interface TransferChoice {
   transfers: TransferMove[];
   projectedGain: number;
+  hitCost?: number;
 }
 
 const MAX_CANDIDATES_PER_POSITION = 12;
@@ -45,12 +46,19 @@ export function buildCandidateDecisions(input: CandidateBuildInput): CandidateDe
     candidates.push(buildCandidate(`transfer-${index + 1}`, `Transfer alternative ${index + 1}`, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
   }
 
-  if (input.allowHits) {
-    const hitChoices = hitTransferChoices(input.state.squad, input.state.bank, input.snapshot.knownBeforeDeadline.players, input.hitThreshold ?? 4.5);
-    for (const [index, choice] of hitChoices.entries()) {
+  if (input.allowHits || input.state.freeTransfers >= 2) {
+    const hitChoices = hitTransferChoices(input.state.squad, input.state.bank, input.state.freeTransfers, input.snapshot.knownBeforeDeadline.players, input.hitThreshold ?? 4.5);
+    let hitCount = 0;
+    let multiTransferCount = 0;
+    for (const choice of hitChoices) {
       if (candidates.length >= maxCandidates) break;
+      const hitCost = choice.hitCost ?? 0;
+      if (hitCost > 0) hitCount += 1;
+      else multiTransferCount += 1;
+      const id = hitCost > 0 ? `hit-${hitCount}` : `multi-transfer-${multiTransferCount}`;
+      const label = hitCost > 0 ? `Hit alternative ${hitCount}` : `Multi-transfer alternative ${multiTransferCount}`;
       const idsAfterTransfers = applyTransferIds(currentIds, choice.transfers);
-      candidates.push(buildCandidate(`hit-${index + 1}`, `Hit alternative ${index + 1}`, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
+      candidates.push(buildCandidate(id, label, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
     }
   }
 
@@ -80,7 +88,7 @@ function singleTransferChoices(squad: SquadPick[], bank: number, players: Backte
   return dedupeTransferChoices(choices).sort(compareTransferChoices);
 }
 
-function hitTransferChoices(squad: SquadPick[], bank: number, players: BacktestPlayer[], hitThreshold: number): TransferChoice[] {
+function hitTransferChoices(squad: SquadPick[], bank: number, freeTransfers: number, players: BacktestPlayer[], hitThreshold: number): TransferChoice[] {
   const playersById = new Map(players.map(player => [player.id, player]));
   const squadIds = new Set(squad.map(pick => pick.playerId));
   const candidatesByElementType = groupPlayersByElementType(candidatePlayers(players.filter(player => !squadIds.has(player.id)), MAX_CANDIDATES_PER_POSITION));
@@ -109,9 +117,10 @@ function hitTransferChoices(squad: SquadPick[], bank: number, players: BacktestP
           const finalPlayers = playersAfterTransfers(squad, transfers, playersById);
           const bankAfter = calculateBankAfterTransfers(squad, bank, transfers, playersById);
           if (!finalPlayers || !isLegalSquad(finalPlayers, bankAfter)) continue;
-          const projectedGain = scoreSquad(finalPlayers) - currentScore - FPL_RULES.hitCost;
-          if (projectedGain < hitThreshold) continue;
-          choices.push({ transfers, projectedGain });
+          const hitCost = Math.max(0, transfers.length - freeTransfers) * FPL_RULES.hitCost;
+          const projectedGain = scoreSquad(finalPlayers) - currentScore - hitCost;
+          if (hitCost > 0 && projectedGain < hitThreshold) continue;
+          choices.push({ transfers, projectedGain, hitCost });
         }
       }
     }

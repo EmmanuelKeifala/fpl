@@ -68,6 +68,26 @@ test('buildCandidateDecisions excludes hit candidates unless allowed', () => {
   assert.equal(aggressive.some(candidate => candidate.id.startsWith('hit-')), true);
 });
 
+test('buildCandidateDecisions includes no-hit two-transfer candidates with two free transfers', () => {
+  const squad = legalSquadPlayers();
+  const replacements = [player(99, 8, 45, 3, 99), player(100, 6.5, 45, 4, 100)];
+
+  const candidates = buildCandidateDecisions({
+    state: { ...stateWithSquad(squad), freeTransfers: 2 },
+    snapshot: {
+      season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
+      knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    },
+    allowHits: false,
+    hitThreshold: 10,
+    maxCandidates: 8,
+  });
+
+  const multiTransfer = candidates.find(candidate => candidate.id.startsWith('multi-transfer-'));
+  assert.deepEqual(multiTransfer?.decision.transfers, [{ out: 12, in: 99 }, { out: 15, in: 100 }]);
+});
+
 test('buildCandidateDecisions can fund a hit upgrade with a downgrade', () => {
   const squad = legalSquadPlayers();
   const replacements = [
