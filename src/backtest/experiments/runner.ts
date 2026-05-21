@@ -5,6 +5,7 @@ import { buildBacktestReport } from '../report.js';
 import { FileSnapshotStore } from '../snapshots.js';
 import { createFairStrategy } from '../strategies/fair.js';
 import { getDefaultBacktestCacheDir } from '../data-source.js';
+import { EXPERIMENT_CONFIGS, resolveTemperature } from './configs.js';
 import { createHybridStrategy } from './hybrid-strategy.js';
 import { getNewsContext, type NewsMode } from './news.js';
 import { createCachedRanker } from './ranker.js';
@@ -91,11 +92,14 @@ async function runExperimentSeason(season: string, mode: ExperimentMode, cacheDi
   const snapshotStore = new FileSnapshotStore(getDefaultBacktestCacheDir(season));
   const firstSnapshot = await snapshotStore.getSnapshot(1);
   const warnings: string[] = [];
+  const smokeConfig = EXPERIMENT_CONFIGS[0]!;
   const strategy = mode === 'fair'
     ? createFairStrategy()
     : createHybridStrategy({
       mode,
-      configId: 'smoke',
+      config: smokeConfig,
+      temperature: resolveTemperature(smokeConfig, false),
+      stochastic: false,
       ranker: createCachedRanker({ cacheDir }),
       getNews: async ({ snapshot }) => {
         if (!liveNews) {
