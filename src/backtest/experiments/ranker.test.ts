@@ -81,3 +81,44 @@ test('createCachedRanker uses deterministic no-key fallback', async () => {
     assert.match(result.explanation, /no llm provider/i);
   });
 });
+
+test('createCachedRanker falls back when provider fails', async () => {
+  await withTempDir(async cacheDir => {
+    const ranker = createCachedRanker({
+      cacheDir,
+      provider: async () => { throw new Error('provider unavailable'); },
+    });
+
+    const result = await ranker(rankerInput());
+
+    assert.equal(result.candidateId, 'best-transfer');
+    assert.match(result.explanation, /provider failed/i);
+  });
+});
+
+test('createCachedRanker constrains OpenAI output to candidate id schema', async () => {
+  await withTempDir(async cacheDir => {
+    const originalFetch = globalThis.fetch;
+    const originalKey = process.env.OPENAI_API_KEY;
+    let requestBody: any;
+    process.env.OPENAI_API_KEY = 'test-key';
+    globalThis.fetch = (async (_url: string | URL | Request, init?: RequestInit) => {
+      requestBody = JSON.parse(String(init?.body));
+      return new Response(JSON.stringify({
+        output: [{ content: [{ text: JSON.stringify({ candidateId: 'best-transfer', explanation: 'schema choice' }) }] }],
+      }), { status: 200, headers: { 'content-type': 'application/json' } });
+    }) as typeof fetch;
+    try {
+      const ranker = createCachedRanker({ cacheDir });
+      const result = await ranker(rankerInput());
+
+      assert.equal(result.candidateId, 'best-transfer');
+      assert.deepEqual(requestBody.text.format.schema.properties.candidateId.enum, ['hold', 'best-transfer']);
+      assert.equal(requestBody.text.format.strict, true);
+    } finally {
+      globalThis.fetch = originalFetch;
+      if (originalKey === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = originalKey;
+    }
+  });
+});

@@ -24,17 +24,33 @@ export function createCachedRanker(options: CachedRankerOptions): HybridRanker {
     }
 
     const provider = options.provider ?? (process.env.OPENAI_API_KEY ? openAiProvider(model) : deterministicFallbackProvider);
-    const result = validateSelection(await provider(input), input);
+    const result = await selectWithFallback(provider, input);
     await mkdir(join(options.cacheDir, 'ranker'), { recursive: true });
     await writeFile(cachePath, `${JSON.stringify(result, null, 2)}\n`);
     return result;
   };
 }
 
+async function selectWithFallback(provider: RankerProvider, input: HybridRankerInput): Promise<HybridRankerResult> {
+  try {
+    return validateSelection(await provider(input), input);
+  } catch (error) {
+    const fallback = bestProjectedCandidate(input);
+    return {
+      candidateId: fallback.id,
+      explanation: `Fallback selected ${fallback.label}; provider failed: ${formatProviderError(error)}.`,
+    };
+  }
+}
+
 function validateSelection(result: HybridRankerResult, input: HybridRankerInput): HybridRankerResult {
   if (input.candidates.some(candidate => candidate.id === result.candidateId)) return result;
   const fallback = bestProjectedCandidate(input);
   return { candidateId: fallback.id, explanation: `Fallback selected ${fallback.label}; provider returned invalid candidate ${result.candidateId}.` };
+}
+
+function formatProviderError(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
 }
 
 function deterministicFallbackProvider(input: HybridRankerInput): Promise<HybridRankerResult> {
@@ -48,6 +64,7 @@ function bestProjectedCandidate(input: HybridRankerInput) {
 
 function openAiProvider(model: string): RankerProvider {
   return async input => {
+    const candidateIds = input.candidates.map(candidate => candidate.id);
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
@@ -60,7 +77,22 @@ function openAiProvider(model: string): RankerProvider {
           { role: 'system', content: 'You rank legal Fantasy Premier League backtest candidates. Return only JSON with candidateId and explanation.' },
           { role: 'user', content: JSON.stringify(compactRankerInput(input)) },
         ],
-        text: { format: { type: 'json_object' } },
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'fpl_candidate_ranking',
+            strict: true,
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                candidateId: { type: 'string', enum: candidateIds },
+                explanation: { type: 'string' },
+              },
+              required: ['candidateId', 'explanation'],
+            },
+          },
+        },
       }),
     });
     if (!response.ok) throw new Error(`OpenAI ranker failed with ${response.status}`);
