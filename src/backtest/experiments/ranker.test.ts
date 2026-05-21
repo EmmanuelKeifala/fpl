@@ -87,6 +87,20 @@ test('createCachedRanker falls back when provider selects invalid candidate', as
   });
 });
 
+test('createCachedRanker preserves fallback explanations for report telemetry', async () => {
+  await withTempDir(async cacheDir => {
+    const ranker = createCachedRanker({
+      cacheDir,
+      provider: async () => ({ candidateId: 'missing', explanation: 'bad choice' }),
+    });
+
+    const result = await ranker(rankerInput());
+
+    assert.equal(result.candidateId, 'best-transfer');
+    assert.match(result.explanation, /provider returned invalid candidate missing/i);
+  });
+});
+
 test('createCachedRanker uses deterministic no-key fallback', async () => {
   await withTempDir(async cacheDir => {
     const ranker = createCachedRanker({ cacheDir });
