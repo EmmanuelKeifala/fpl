@@ -24,6 +24,8 @@ interface TransferChoice {
   projectedGain: number;
 }
 
+const MAX_CANDIDATES_PER_POSITION = 12;
+
 export function buildCandidateDecisions(input: CandidateBuildInput): CandidateDecision[] {
   const maxCandidates = input.maxCandidates ?? 5;
   const playersById = new Map(input.snapshot.knownBeforeDeadline.players.map(player => [player.id, player]));
@@ -81,7 +83,7 @@ function singleTransferChoices(squad: SquadPick[], bank: number, players: Backte
 function hitTransferChoices(squad: SquadPick[], bank: number, players: BacktestPlayer[], hitThreshold: number): TransferChoice[] {
   const playersById = new Map(players.map(player => [player.id, player]));
   const squadIds = new Set(squad.map(pick => pick.playerId));
-  const candidates = candidatePlayers(players).filter(player => !squadIds.has(player.id));
+  const candidatesByElementType = groupPlayersByElementType(candidatePlayers(players.filter(player => !squadIds.has(player.id)), MAX_CANDIDATES_PER_POSITION));
   const currentScore = scoreSquad(squad.map(pick => playersById.get(pick.playerId)).filter(Boolean) as BacktestPlayer[]);
   const choices: TransferChoice[] = [];
   const seen = new Set<string>();
@@ -96,12 +98,9 @@ function hitTransferChoices(squad: SquadPick[], bank: number, players: BacktestP
       const secondOutgoingPlayer = playersById.get(secondOutgoing.playerId);
       if (!secondOutgoingPlayer) continue;
 
-      for (const firstIncoming of candidates) {
-        if (firstIncoming.elementType !== firstOutgoingPlayer.elementType) continue;
-
-        for (const secondIncoming of candidates) {
+      for (const firstIncoming of candidatesByElementType.get(firstOutgoingPlayer.elementType) ?? []) {
+        for (const secondIncoming of candidatesByElementType.get(secondOutgoingPlayer.elementType) ?? []) {
           if (secondIncoming.id === firstIncoming.id) continue;
-          if (secondIncoming.elementType !== secondOutgoingPlayer.elementType) continue;
           const transfers = [{ out: firstOutgoing.playerId, in: firstIncoming.id }, { out: secondOutgoing.playerId, in: secondIncoming.id }];
           const key = transfers.map(transfer => `${transfer.out}:${transfer.in}`).sort().join('|');
           if (seen.has(key)) continue;
@@ -121,10 +120,21 @@ function hitTransferChoices(squad: SquadPick[], bank: number, players: BacktestP
   return choices.sort(compareTransferChoices);
 }
 
-function candidatePlayers(players: BacktestPlayer[]): BacktestPlayer[] {
-  return players
-    .filter(player => POSITION_BY_ELEMENT_TYPE[player.elementType])
-    .sort((a, b) => b.expectedPoints - a.expectedPoints || a.price - b.price || a.id - b.id);
+function candidatePlayers(players: BacktestPlayer[], maxPerPosition = Number.POSITIVE_INFINITY): BacktestPlayer[] {
+  const result: BacktestPlayer[] = [];
+  for (const elementType of [1, 2, 3, 4]) {
+    result.push(...players
+      .filter(player => POSITION_BY_ELEMENT_TYPE[player.elementType] && player.elementType === elementType)
+      .sort((a, b) => b.expectedPoints - a.expectedPoints || a.price - b.price || a.id - b.id)
+      .slice(0, maxPerPosition));
+  }
+  return result;
+}
+
+function groupPlayersByElementType(players: BacktestPlayer[]): Map<number, BacktestPlayer[]> {
+  const result = new Map<number, BacktestPlayer[]>();
+  for (const player of players) result.set(player.elementType, [...(result.get(player.elementType) ?? []), player]);
+  return result;
 }
 
 function playersAfterTransfers(squad: SquadPick[], transfers: TransferMove[], playersById: Map<number, BacktestPlayer>): BacktestPlayer[] | undefined {
