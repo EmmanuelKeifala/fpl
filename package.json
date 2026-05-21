@@ -11,6 +11,7 @@
     "auto": "tsx src/scheduler/runner.ts",
     "backtest:prepare": "tsx src/backtest/index.ts prepare-data",
     "backtest:run": "tsx src/backtest/index.ts run-season",
+    "backtest:experiment": "tsx src/backtest/index.ts run-experiment",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
     "test": "tsx --test src/**/*.test.ts"
