@@ -40,25 +40,32 @@ export function buildCandidateDecisions(input: CandidateBuildInput): CandidateDe
   const candidates: CandidateDecision[] = [buildCandidate('hold', 'Hold squad', input.snapshot.gameweek, currentIds, [], playersById)];
 
   const transferChoices = singleTransferChoices(input.state.squad, input.state.bank, input.snapshot.knownBeforeDeadline.players);
-  for (const [index, choice] of transferChoices.entries()) {
+  const multiTransferChoices = input.state.freeTransfers >= 2
+    ? hitTransferChoices(input.state.squad, input.state.bank, input.state.freeTransfers, input.snapshot.knownBeforeDeadline.players, input.hitThreshold ?? 4.5)
+      .filter(choice => (choice.hitCost ?? 0) === 0)
+    : [];
+  const primaryChoices = [...transferChoices, ...multiTransferChoices].sort(compareTransferChoices);
+  let transferCount = 0;
+  let multiTransferCount = 0;
+  for (const choice of primaryChoices) {
     if (candidates.length >= maxCandidates) break;
+    if (choice.transfers.length === 1) transferCount += 1;
+    else multiTransferCount += 1;
+    const id = choice.transfers.length === 1 ? `transfer-${transferCount}` : `multi-transfer-${multiTransferCount}`;
+    const label = choice.transfers.length === 1 ? `Transfer alternative ${transferCount}` : `Multi-transfer alternative ${multiTransferCount}`;
     const idsAfterTransfers = applyTransferIds(currentIds, choice.transfers);
-    candidates.push(buildCandidate(`transfer-${index + 1}`, `Transfer alternative ${index + 1}`, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
+    candidates.push(buildCandidate(id, label, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
   }
 
-  if (input.allowHits || input.state.freeTransfers >= 2) {
-    const hitChoices = hitTransferChoices(input.state.squad, input.state.bank, input.state.freeTransfers, input.snapshot.knownBeforeDeadline.players, input.hitThreshold ?? 4.5);
+  if (input.allowHits) {
+    const hitChoices = hitTransferChoices(input.state.squad, input.state.bank, input.state.freeTransfers, input.snapshot.knownBeforeDeadline.players, input.hitThreshold ?? 4.5)
+      .filter(choice => (choice.hitCost ?? 0) > 0);
     let hitCount = 0;
-    let multiTransferCount = 0;
     for (const choice of hitChoices) {
       if (candidates.length >= maxCandidates) break;
-      const hitCost = choice.hitCost ?? 0;
-      if (hitCost > 0) hitCount += 1;
-      else multiTransferCount += 1;
-      const id = hitCost > 0 ? `hit-${hitCount}` : `multi-transfer-${multiTransferCount}`;
-      const label = hitCost > 0 ? `Hit alternative ${hitCount}` : `Multi-transfer alternative ${multiTransferCount}`;
+      hitCount += 1;
       const idsAfterTransfers = applyTransferIds(currentIds, choice.transfers);
-      candidates.push(buildCandidate(id, label, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
+      candidates.push(buildCandidate(`hit-${hitCount}`, `Hit alternative ${hitCount}`, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
     }
   }
 
