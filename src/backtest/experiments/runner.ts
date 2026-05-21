@@ -5,7 +5,7 @@ import { buildBacktestReport } from '../report.js';
 import { FileSnapshotStore } from '../snapshots.js';
 import { createFairStrategy } from '../strategies/fair.js';
 import { getDefaultBacktestCacheDir } from '../data-source.js';
-import { EXPERIMENT_CONFIGS, resolveTemperature } from './configs.js';
+import { createRunId, resolveTemperature, selectExperimentConfigs, type ExperimentConfig } from './configs.js';
 import { createHybridStrategy } from './hybrid-strategy.js';
 import { getNewsContext, type NewsMode } from './news.js';
 import { createCachedRanker } from './ranker.js';
@@ -18,6 +18,8 @@ export interface ExperimentOptions {
   liveNews: boolean;
   cacheDir: string;
   maxConfigs: number;
+  stochastic: boolean;
+  runId?: string;
 }
 
 export interface ExperimentRow {
@@ -30,6 +32,12 @@ export interface ExperimentRow {
   captainPointsTotal: number;
   benchPointsTotal: number;
   warnings: string[];
+  model: string;
+  temperature: number;
+  stochastic: boolean;
+  runId?: string;
+  choiceCounts: Record<string, number>;
+  fallbackCount: number;
   deltaVsFair?: number;
 }
 
@@ -44,7 +52,9 @@ export function parseExperimentOptions(args: string[]): ExperimentOptions {
   const seasonsArg = args.find(arg => arg.startsWith('--seasons='));
   const cacheArg = args.find(arg => arg.startsWith('--cache-dir='));
   const maxConfigsArg = args.find(arg => arg.startsWith('--max-configs='));
+  const runIdArg = args.find(arg => arg.startsWith('--run-id='));
   const maxConfigs = Number(maxConfigsArg?.split('=')[1] ?? 3);
+  const stochastic = args.includes('--stochastic');
   if (!Number.isInteger(maxConfigs) || maxConfigs < 1) throw new Error('Invalid max configs');
   return {
     seasons: seasonsArg ? seasonsArg.split('=')[1]!.split(',').filter(Boolean) : DEFAULT_SEASONS,
@@ -52,6 +62,8 @@ export function parseExperimentOptions(args: string[]): ExperimentOptions {
     liveNews: args.includes('--live-news'),
     cacheDir: cacheArg?.split('=')[1] ?? 'data/experiments',
     maxConfigs,
+    stochastic,
+    runId: runIdArg?.split('=')[1] ?? (stochastic ? createRunId() : undefined),
   };
 }
 
@@ -75,11 +87,15 @@ export function buildExperimentSummary(rows: ExperimentRow[]): ExperimentSummary
 }
 
 export async function runExperimentMatrix(options: ExperimentOptions): Promise<ExperimentSummary> {
-  const modes: ExperimentMode[] = options.allowLlmNews ? ['fair', 'llm-news-strict', 'llm-news-loose'] : ['fair'];
+  const llmModes: NewsMode[] = options.allowLlmNews ? ['llm-news-strict', 'llm-news-loose'] : [];
+  const configs = selectExperimentConfigs(options.maxConfigs);
   const rows: ExperimentRow[] = [];
   for (const season of options.seasons) {
-    for (const mode of modes.slice(0, options.maxConfigs)) {
-      rows.push(await runExperimentSeason(season, mode, options.cacheDir, options.liveNews));
+    rows.push(await runExperimentSeason(season, 'fair', undefined, options));
+    for (const mode of llmModes) {
+      for (const config of configs) {
+        rows.push(await runExperimentSeason(season, mode, config, options));
+      }
     }
   }
   const summary = buildExperimentSummary(rows);
@@ -88,25 +104,26 @@ export async function runExperimentMatrix(options: ExperimentOptions): Promise<E
   return summary;
 }
 
-async function runExperimentSeason(season: string, mode: ExperimentMode, cacheDir: string, liveNews: boolean): Promise<ExperimentRow> {
+async function runExperimentSeason(season: string, mode: ExperimentMode, config: ExperimentConfig | undefined, options: ExperimentOptions): Promise<ExperimentRow> {
   const snapshotStore = new FileSnapshotStore(getDefaultBacktestCacheDir(season));
   const firstSnapshot = await snapshotStore.getSnapshot(1);
   const warnings: string[] = [];
-  const smokeConfig = EXPERIMENT_CONFIGS[0]!;
-  const strategy = mode === 'fair'
+  const temperature = config ? resolveTemperature(config, options.stochastic) : 0;
+  const strategy = mode === 'fair' || !config
     ? createFairStrategy()
     : createHybridStrategy({
       mode,
-      config: smokeConfig,
-      temperature: resolveTemperature(smokeConfig, false),
-      stochastic: false,
-      ranker: createCachedRanker({ cacheDir }),
+      config,
+      temperature,
+      stochastic: options.stochastic,
+      runId: options.runId,
+      ranker: createCachedRanker({ cacheDir: options.cacheDir }),
       getNews: async ({ snapshot }) => {
-        if (!liveNews) {
+        if (!options.liveNews) {
           warnings.push(`${season} GW${snapshot.gameweek}: Live news disabled; run with --live-news to fetch historical articles.`);
           return [];
         }
-        const context = await getNewsContext({ cacheDir: join(cacheDir, 'news'), season, gameweek: snapshot.gameweek, deadline: snapshot.deadline, mode });
+        const context = await getNewsContext({ cacheDir: join(options.cacheDir, 'news'), season, gameweek: snapshot.gameweek, deadline: snapshot.deadline, mode });
         warnings.push(...context.warnings.map(warning => `${season} GW${snapshot.gameweek}: ${warning}`));
         return context.items;
       },
@@ -123,19 +140,43 @@ async function runExperimentSeason(season: string, mode: ExperimentMode, cacheDi
   return {
     season,
     mode,
-    configId: mode === 'fair' ? 'fair-default' : smokeConfig.id,
+    configId: mode === 'fair' ? 'fair-default' : config!.id,
+    model: config?.model ?? 'deterministic-fair',
+    temperature,
+    stochastic: options.stochastic,
+    runId: options.runId,
     totalPoints: report.totalPoints,
     transfers: report.transfers.length,
     chips: report.chips.length,
     captainPointsTotal: report.captainPointsTotal,
     benchPointsTotal: report.benchPointsTotal,
     warnings,
+    choiceCounts: summarizeChoiceCounts(state.decisions),
+    fallbackCount: countFallbacks(state.decisions),
   };
 }
 
 export function formatExperimentSummary(summary: ExperimentSummary): string {
+  const runIds = [...new Set(summary.rows.map(row => row.runId).filter(Boolean))];
   return [
     'Experiment summary',
+    ...runIds.map(runId => `stochastic run id: ${runId}`),
     ...summary.configs.map(config => `${config.mode}/${config.configId}: ${config.averagePoints.toFixed(1)} avg points`),
   ].join('\n');
+}
+
+function summarizeChoiceCounts(decisions: Array<{ notes: string[] }>): Record<string, number> {
+  const counts: Record<string, number> = {};
+  for (const decision of decisions) {
+    const note = decision.notes.find(value => value.startsWith('LLM hybrid selected '));
+    if (!note) continue;
+    const candidateId = note.slice('LLM hybrid selected '.length).split(':')[0] ?? 'unknown';
+    const prefix = candidateId.split('-')[0] ?? candidateId;
+    counts[prefix] = (counts[prefix] ?? 0) + 1;
+  }
+  return counts;
+}
+
+function countFallbacks(decisions: Array<{ notes: string[] }>): number {
+  return decisions.flatMap(decision => decision.notes).filter(note => /fallback|no llm provider|provider failed|invalid candidate/i.test(note)).length;
 }
