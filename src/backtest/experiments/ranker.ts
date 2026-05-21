@@ -48,6 +48,7 @@ function bestProjectedCandidate(input: HybridRankerInput) {
 
 function openAiProvider(model: string): RankerProvider {
   return async input => {
+    const candidateIds = input.candidates.map(candidate => candidate.id);
     const response = await fetch('https://api.openai.com/v1/responses', {
       method: 'POST',
       headers: {
@@ -60,7 +61,22 @@ function openAiProvider(model: string): RankerProvider {
           { role: 'system', content: 'You rank legal Fantasy Premier League backtest candidates. Return only JSON with candidateId and explanation.' },
           { role: 'user', content: JSON.stringify(compactRankerInput(input)) },
         ],
-        text: { format: { type: 'json_object' } },
+        text: {
+          format: {
+            type: 'json_schema',
+            name: 'fpl_candidate_ranking',
+            strict: true,
+            schema: {
+              type: 'object',
+              additionalProperties: false,
+              properties: {
+                candidateId: { type: 'string', enum: candidateIds },
+                explanation: { type: 'string' },
+              },
+              required: ['candidateId', 'explanation'],
+            },
+          },
+        },
       }),
     });
     if (!response.ok) throw new Error(`OpenAI ranker failed with ${response.status}`);
