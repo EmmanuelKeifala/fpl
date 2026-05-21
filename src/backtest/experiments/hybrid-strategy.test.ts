@@ -30,20 +30,41 @@ function stateWithSquad(players: BacktestPlayer[]): ManagerState {
   };
 }
 
-test('buildCandidateDecisions includes hold and transfer candidates', () => {
+test('buildCandidateDecisions includes several one-transfer alternatives', () => {
   const squad = legalSquadPlayers();
-  const replacement = player(99, 12, 45, 3, 99);
+  const replacements = [
+    player(99, 12, 45, 3, 99),
+    player(100, 11.5, 45, 3, 100),
+    player(101, 11, 45, 3, 101),
+  ];
   const candidates = buildCandidateDecisions({
     state: stateWithSquad(squad),
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
-      knownBeforeDeadline: { players: [...squad, replacement], fixtures: [], unavailableFields: [] },
+      knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
       provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
     },
+    maxCandidates: 4,
   });
 
-  assert.equal(candidates[0]?.id, 'hold');
-  assert.deepEqual(candidates.map(candidate => candidate.decision.transfers), [[], [{ out: 12, in: 99 }]]);
+  assert.deepEqual(candidates.map(candidate => candidate.id), ['hold', 'transfer-1', 'transfer-2', 'transfer-3']);
+  assert.deepEqual(candidates.slice(1).map(candidate => candidate.decision.transfers[0]?.in), [99, 100, 101]);
+});
+
+test('buildCandidateDecisions excludes hit candidates unless allowed', () => {
+  const squad = legalSquadPlayers();
+  const replacements = [player(99, 12, 45, 3, 99), player(100, 11.5, 45, 4, 100)];
+  const snapshot = {
+    season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
+    knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
+    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+  };
+
+  const conservative = buildCandidateDecisions({ state: stateWithSquad(squad), snapshot, allowHits: false, maxCandidates: 8 });
+  const aggressive = buildCandidateDecisions({ state: stateWithSquad(squad), snapshot, allowHits: true, hitThreshold: 0, maxCandidates: 8 });
+
+  assert.equal(conservative.some(candidate => candidate.id.startsWith('hit-')), false);
+  assert.equal(aggressive.some(candidate => candidate.id.startsWith('hit-')), true);
 });
 
 test('buildCandidateDecisions creates an initial squad candidate in GW1', () => {
