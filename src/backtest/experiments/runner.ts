@@ -137,6 +137,7 @@ async function runExperimentSeason(season: string, mode: ExperimentMode, config:
   });
   const state = await engine.run();
   const report = buildBacktestReport(state, firstSnapshot.provenance, mode === 'fair' ? 'fair' : 'fair');
+  const telemetry = summarizeExperimentDecisionTelemetry(state.decisions);
   return {
     season,
     mode,
@@ -151,8 +152,8 @@ async function runExperimentSeason(season: string, mode: ExperimentMode, config:
     captainPointsTotal: report.captainPointsTotal,
     benchPointsTotal: report.benchPointsTotal,
     warnings,
-    choiceCounts: summarizeChoiceCounts(state.decisions),
-    fallbackCount: countFallbacks(state.decisions),
+    choiceCounts: telemetry.choiceCounts,
+    fallbackCount: telemetry.fallbackCount,
   };
 }
 
@@ -163,6 +164,13 @@ export function formatExperimentSummary(summary: ExperimentSummary): string {
     ...runIds.map(runId => `stochastic run id: ${runId}`),
     ...summary.configs.map(config => `${config.mode}/${config.configId}: ${config.averagePoints.toFixed(1)} avg points`),
   ].join('\n');
+}
+
+export function summarizeExperimentDecisionTelemetry(decisions: Array<{ notes: string[] }>): { choiceCounts: Record<string, number>; fallbackCount: number } {
+  return {
+    choiceCounts: summarizeChoiceCounts(decisions),
+    fallbackCount: countFallbacks(decisions),
+  };
 }
 
 function summarizeChoiceCounts(decisions: Array<{ notes: string[] }>): Record<string, number> {

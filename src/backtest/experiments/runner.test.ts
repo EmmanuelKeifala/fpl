@@ -1,7 +1,7 @@
 import { strict as assert } from 'node:assert';
 import test from 'node:test';
 import { createRunId, selectExperimentConfigs } from './configs.js';
-import { buildExperimentSummary, formatExperimentSummary, parseExperimentOptions } from './runner.js';
+import { buildExperimentSummary, formatExperimentSummary, parseExperimentOptions, summarizeExperimentDecisionTelemetry } from './runner.js';
 
 test('buildExperimentSummary aggregates averages and fair deltas', () => {
   const summary = buildExperimentSummary([
@@ -53,6 +53,14 @@ test('parseExperimentOptions accepts stochastic run id', () => {
   });
 });
 
+test('parseExperimentOptions generates stochastic run id only when needed', () => {
+  const stochastic = parseExperimentOptions(['--stochastic']);
+  const deterministic = parseExperimentOptions([]);
+
+  assert.match(stochastic.runId ?? '', /^[a-z0-9]{8}$/);
+  assert.equal(deterministic.runId, undefined);
+});
+
 test('parseExperimentOptions keeps LLM modes enabled when limiting configs', () => {
   assert.deepEqual(parseExperimentOptions(['--allow-llm-news', '--max-configs=1']), {
     seasons: ['2021-2022', '2022-2023', '2023-2024', '2024-2025'],
@@ -73,6 +81,50 @@ test('formatExperimentSummary includes stochastic run id', () => {
   assert.match(formatExperimentSummary(summary), /stochastic run id: abc12345/);
 });
 
+test('buildExperimentSummary preserves row telemetry fields', () => {
+  const summary = buildExperimentSummary([
+    row('2023-2024', 'fair', 'fair-default', 2000),
+    row('2023-2024', 'llm-news-strict', 'aggressive', 2020, {
+      model: 'gpt-test',
+      temperature: 0.7,
+      stochastic: true,
+      runId: 'abc12345',
+      choiceCounts: { transfer: 2, captain: 1 },
+      fallbackCount: 3,
+    }),
+  ]);
+
+  assert.deepEqual(summary.rows[1], {
+    season: '2023-2024',
+    mode: 'llm-news-strict',
+    configId: 'aggressive',
+    totalPoints: 2020,
+    transfers: 0,
+    chips: 0,
+    captainPointsTotal: 0,
+    benchPointsTotal: 0,
+    warnings: [],
+    model: 'gpt-test',
+    temperature: 0.7,
+    stochastic: true,
+    runId: 'abc12345',
+    choiceCounts: { transfer: 2, captain: 1 },
+    fallbackCount: 3,
+    deltaVsFair: 20,
+  });
+});
+
+test('summarizeExperimentDecisionTelemetry counts LLM choices and fallbacks', () => {
+  assert.deepEqual(summarizeExperimentDecisionTelemetry([
+    { notes: ['LLM hybrid selected transfer-1: upgrade midfield'] },
+    { notes: ['LLM hybrid selected captain-2: better fixture', 'provider failed; fallback to baseline'] },
+    { notes: ['invalid candidate from LLM; fallback applied'] },
+  ]), {
+    choiceCounts: { transfer: 1, captain: 1 },
+    fallbackCount: 2,
+  });
+});
+
 test('selectExperimentConfigs returns stable default config order', () => {
   assert.deepEqual(selectExperimentConfigs(3).map(config => config.id), ['balanced', 'aggressive', 'conservative']);
 });
@@ -85,7 +137,13 @@ test('createRunId returns a short lowercase id', () => {
   assert.match(createRunId(), /^[a-z0-9]{8}$/);
 });
 
-function row(season: string, mode: 'fair' | 'llm-news-strict' | 'llm-news-loose', configId: string, totalPoints: number) {
+function row(
+  season: string,
+  mode: 'fair' | 'llm-news-strict' | 'llm-news-loose',
+  configId: string,
+  totalPoints: number,
+  telemetry: Partial<ReturnType<typeof summarizeExperimentDecisionTelemetry> & { model: string; temperature: number; stochastic: boolean; runId: string }> = {},
+) {
   return {
     season,
     mode,
@@ -96,10 +154,11 @@ function row(season: string, mode: 'fair' | 'llm-news-strict' | 'llm-news-loose'
     captainPointsTotal: 0,
     benchPointsTotal: 0,
     warnings: [],
-    model: 'test-model',
-    temperature: 0,
-    stochastic: false,
-    choiceCounts: {},
-    fallbackCount: 0,
+    model: telemetry.model ?? 'test-model',
+    temperature: telemetry.temperature ?? 0,
+    stochastic: telemetry.stochastic ?? false,
+    runId: telemetry.runId,
+    choiceCounts: telemetry.choiceCounts ?? {},
+    fallbackCount: telemetry.fallbackCount ?? 0,
   };
 }
