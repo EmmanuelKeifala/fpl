@@ -123,7 +123,7 @@ async function runExperimentSeason(season: string, mode: ExperimentMode, cacheDi
   return {
     season,
     mode,
-    configId: mode === 'fair' ? 'fair-default' : 'smoke',
+    configId: mode === 'fair' ? 'fair-default' : smokeConfig.id,
     totalPoints: report.totalPoints,
     transfers: report.transfers.length,
     chips: report.chips.length,
