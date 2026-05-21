@@ -67,6 +67,29 @@ test('buildCandidateDecisions excludes hit candidates unless allowed', () => {
   assert.equal(aggressive.some(candidate => candidate.id.startsWith('hit-')), true);
 });
 
+test('buildCandidateDecisions can fund a hit upgrade with a downgrade', () => {
+  const squad = legalSquadPlayers();
+  const replacements = [
+    player(99, 18, 80, 3, 99),
+    player(100, 5, 10, 4, 100),
+  ];
+
+  const candidates = buildCandidateDecisions({
+    state: { ...stateWithSquad(squad), bank: 0 },
+    snapshot: {
+      season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
+      knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    },
+    allowHits: true,
+    hitThreshold: 7,
+    maxCandidates: 8,
+  });
+
+  const hit = candidates.find(candidate => candidate.id.startsWith('hit-'));
+  assert.deepEqual(hit?.decision.transfers, [{ out: 12, in: 99 }, { out: 15, in: 100 }]);
+});
+
 test('buildCandidateDecisions creates an initial squad candidate in GW1', () => {
   const players = legalSquadPlayers();
   const candidates = buildCandidateDecisions({

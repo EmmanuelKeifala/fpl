@@ -79,26 +79,42 @@ function singleTransferChoices(squad: SquadPick[], bank: number, players: Backte
 }
 
 function hitTransferChoices(squad: SquadPick[], bank: number, players: BacktestPlayer[], hitThreshold: number): TransferChoice[] {
-  const singles = singleTransferChoices(squad, bank, players);
+  const playersById = new Map(players.map(player => [player.id, player]));
+  const squadIds = new Set(squad.map(pick => pick.playerId));
+  const candidates = candidatePlayers(players).filter(player => !squadIds.has(player.id));
+  const currentScore = scoreSquad(squad.map(pick => playersById.get(pick.playerId)).filter(Boolean) as BacktestPlayer[]);
   const choices: TransferChoice[] = [];
   const seen = new Set<string>();
 
-  for (let firstIndex = 0; firstIndex < singles.length; firstIndex++) {
-    for (let secondIndex = firstIndex + 1; secondIndex < singles.length; secondIndex++) {
-      const transfers = [...singles[firstIndex]!.transfers, ...singles[secondIndex]!.transfers];
-      if (new Set(transfers.map(transfer => transfer.out)).size !== transfers.length) continue;
-      if (new Set(transfers.map(transfer => transfer.in)).size !== transfers.length) continue;
-      const key = transfers.map(transfer => `${transfer.out}:${transfer.in}`).sort().join('|');
-      if (seen.has(key)) continue;
-      seen.add(key);
+  for (let firstIndex = 0; firstIndex < squad.length; firstIndex++) {
+    const firstOutgoing = squad[firstIndex]!;
+    const firstOutgoingPlayer = playersById.get(firstOutgoing.playerId);
+    if (!firstOutgoingPlayer) continue;
 
-      const playersById = new Map(players.map(player => [player.id, player]));
-      const finalPlayers = playersAfterTransfers(squad, transfers, playersById);
-      const bankAfter = calculateBankAfterTransfers(squad, bank, transfers, playersById);
-      if (!finalPlayers || !isLegalSquad(finalPlayers, bankAfter)) continue;
-      const projectedGain = singles[firstIndex]!.projectedGain + singles[secondIndex]!.projectedGain - FPL_RULES.hitCost;
-      if (projectedGain < hitThreshold) continue;
-      choices.push({ transfers, projectedGain });
+    for (let secondIndex = firstIndex + 1; secondIndex < squad.length; secondIndex++) {
+      const secondOutgoing = squad[secondIndex]!;
+      const secondOutgoingPlayer = playersById.get(secondOutgoing.playerId);
+      if (!secondOutgoingPlayer) continue;
+
+      for (const firstIncoming of candidates) {
+        if (firstIncoming.elementType !== firstOutgoingPlayer.elementType) continue;
+
+        for (const secondIncoming of candidates) {
+          if (secondIncoming.id === firstIncoming.id) continue;
+          if (secondIncoming.elementType !== secondOutgoingPlayer.elementType) continue;
+          const transfers = [{ out: firstOutgoing.playerId, in: firstIncoming.id }, { out: secondOutgoing.playerId, in: secondIncoming.id }];
+          const key = transfers.map(transfer => `${transfer.out}:${transfer.in}`).sort().join('|');
+          if (seen.has(key)) continue;
+          seen.add(key);
+
+          const finalPlayers = playersAfterTransfers(squad, transfers, playersById);
+          const bankAfter = calculateBankAfterTransfers(squad, bank, transfers, playersById);
+          if (!finalPlayers || !isLegalSquad(finalPlayers, bankAfter)) continue;
+          const projectedGain = scoreSquad(finalPlayers) - currentScore - FPL_RULES.hitCost;
+          if (projectedGain < hitThreshold) continue;
+          choices.push({ transfers, projectedGain });
+        }
+      }
     }
   }
 
