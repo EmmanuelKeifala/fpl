@@ -82,6 +82,20 @@ test('createCachedRanker uses deterministic no-key fallback', async () => {
   });
 });
 
+test('createCachedRanker falls back when provider fails', async () => {
+  await withTempDir(async cacheDir => {
+    const ranker = createCachedRanker({
+      cacheDir,
+      provider: async () => { throw new Error('provider unavailable'); },
+    });
+
+    const result = await ranker(rankerInput());
+
+    assert.equal(result.candidateId, 'best-transfer');
+    assert.match(result.explanation, /provider failed/i);
+  });
+});
+
 test('createCachedRanker constrains OpenAI output to candidate id schema', async () => {
   await withTempDir(async cacheDir => {
     const originalFetch = globalThis.fetch;
