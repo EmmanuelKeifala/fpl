@@ -143,19 +143,9 @@ Promote in stages:
 - Never replace missing historical information with current API values.
 - Cache model inputs and outputs by dataset, feature, and model version for reproducibility.
 
-## Testing
+## Verification
 
-Add focused coverage for:
-
-- Same-gameweek and post-deadline field rejection.
-- Lagged feature construction and rolling-origin boundaries.
-- Season-specific free-transfer, scoring, and chip behavior.
-- Planner legality, budget, club limits, hit accounting, and determinism.
-- Counterfactual chip gains and opportunity-cost decisions.
-- Captain/vice and formation-aware autosub behavior.
-- Shared planner parity between replay and live adapters.
-- Golden replays against selected official manager gameweeks.
-- End-to-end strict replay with no access to current or future results.
+Do not add new automated tests during this improvement phase. Use the existing test suite, TypeScript build, snapshot validation, and full-season strict replays to catch regressions and compare each model iteration. Promotion evidence must come from untouched-season replay results rather than additional test scaffolding.
 
 ## Success Criteria
 
