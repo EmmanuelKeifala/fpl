@@ -36,8 +36,8 @@ export interface BacktestManifest {
   snapshotVersion: string;
 }
 
-export function getDefaultBacktestCacheDir(season: string): string {
-  return `data/historical/${season}`;
+export function getDefaultBacktestCacheDir(season: string, dataMode?: ReplayDataMode): string {
+  return dataMode ? `data/historical/${season}/${dataMode}` : `data/historical/${season}`;
 }
 
 export class BacktestDataSource {

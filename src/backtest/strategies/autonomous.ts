@@ -9,7 +9,6 @@ import type {
 } from '../types.js';
 import { availableRebuildBudget, buildSquadWithinBudget, replacementTransfers } from './fair.js';
 import { selectCaptaincy, selectLineup } from './lineup.js';
-import type { ChipName } from '../../strategy/rules.js';
 
 export function createAutonomousReplayStrategy(): BacktestStrategy {
   return ({ state, snapshot, revealedResults }) => {
@@ -76,12 +75,6 @@ function applyChipPolicy(
   const playersById = new Map(snapshot.knownBeforeDeadline.players.map(player => [player.id, player]));
   const currentIds = state.squad.map(pick => pick.playerId);
   const phaseOffset = snapshot.gameweek <= 19 ? 0 : 19;
-  const fallbackWeek: Record<ChipName, number> = {
-    wildcard: phaseOffset + 16,
-    freehit: phaseOffset + 17,
-    '3xc': phaseOffset + 18,
-    bboost: phaseOffset + 19,
-  };
   const teamFixtureCounts = new Map<number, number>();
   const currentFixtures = snapshot.knownBeforeDeadline.fixtures.filter(fixture => fixture.event === snapshot.gameweek);
   for (const fixture of currentFixtures) {
@@ -94,20 +87,20 @@ function applyChipPolicy(
   const currentProjected = projected(currentIds, playersById);
   const rebuiltProjected = rebuiltIds ? projected(rebuiltIds, playersById) : currentProjected;
   const wildcardDue = state.chipsAvailable.includes('wildcard') &&
-    ((snapshot.gameweek >= phaseOffset + 8 && rebuiltProjected - currentProjected >= 12) || snapshot.gameweek === fallbackWeek.wildcard);
+    snapshot.gameweek >= phaseOffset + 5 && rebuiltProjected - currentProjected >= 12;
   if (wildcardDue && rebuiltIds) return rebuildDecision(snapshot.gameweek, currentIds, rebuiltIds, playersById, 'wildcard');
 
   const startingTeams = baseDecision.startingXi.map(playerId => playersById.get(playerId)?.team).filter((team): team is number => team !== undefined);
   const blankingStarters = startingTeams.filter(team => (teamFixtureCounts.get(team) ?? 0) === 0).length;
   const isBlankGameweek = currentFixtures.length < 10;
   const freeHitDue = state.chipsAvailable.includes('freehit') &&
-    ((isBlankGameweek && blankingStarters >= 4) || snapshot.gameweek === fallbackWeek.freehit);
+    isBlankGameweek && blankingStarters >= 4 && rebuiltProjected - currentProjected >= 8;
   if (freeHitDue && rebuiltIds) return rebuildDecision(snapshot.gameweek, currentIds, rebuiltIds, playersById, 'freehit');
 
   const captain = playersById.get(baseDecision.captain);
   const captainHasDouble = captain ? (teamFixtureCounts.get(captain.team) ?? 0) >= 2 : false;
   if (state.chipsAvailable.includes('3xc') &&
-      ((captainHasDouble && (captain?.expectedPoints ?? 0) >= 10) || snapshot.gameweek === fallbackWeek['3xc'])) {
+      captainHasDouble && (captain?.expectedPoints ?? 0) >= 10) {
     return { ...baseDecision, chip: '3xc', notes: [...baseDecision.notes, 'Deferred triple-captain opportunity policy'] };
   }
 
@@ -117,7 +110,7 @@ function applyChipPolicy(
     return player ? (teamFixtureCounts.get(player.team) ?? 0) >= 2 : false;
   });
   if (state.chipsAvailable.includes('bboost') &&
-      ((benchHasDouble && benchProjection >= 15) || snapshot.gameweek === fallbackWeek.bboost)) {
+      benchHasDouble && benchProjection >= 15) {
     return { ...baseDecision, chip: 'bboost', notes: [...baseDecision.notes, 'Deferred bench-boost opportunity policy'] };
   }
 

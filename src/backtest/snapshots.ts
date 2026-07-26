@@ -21,6 +21,12 @@ export function validateSnapshot(snapshot: GameweekSnapshot): ValidationResult {
     if (playerIds.has(player.id)) errors.push(`Duplicate player id ${player.id} in knownBeforeDeadline.players`);
     playerIds.add(player.id);
     if (player.price <= 0) errors.push(`Invalid price ${player.price} for player id ${player.id}`);
+    if (!Number.isFinite(player.expectedPoints)) errors.push(`Invalid expected points for player id ${player.id}`);
+    if (!player.forecastProvenance) {
+      errors.push(`Missing forecast provenance for player id ${player.id}`);
+    } else if (snapshot.provenance.dataMode !== 'legacy' && player.forecastProvenance.sourceGameweek !== null && player.forecastProvenance.sourceGameweek >= snapshot.gameweek) {
+      errors.push(`Forecast for player id ${player.id} uses GW${player.forecastProvenance.sourceGameweek} in GW${snapshot.gameweek}`);
+    }
   }
 
   const resultIds = new Set(snapshot.actualResults.playerResults.map(result => result.playerId));
@@ -40,6 +46,8 @@ export function validateSnapshot(snapshot: GameweekSnapshot): ValidationResult {
     if (!sourceUrl.trim()) errors.push(`Provenance source URL at index ${index} is required`);
   }
   if (!snapshot.provenance.snapshotVersion) errors.push('Snapshot version is required');
+  if (!snapshot.provenance.dataMode) errors.push('Snapshot data mode is required');
+  if (!snapshot.provenance.rulesVersion) errors.push('Snapshot rules version is required');
 
   return { valid: errors.length === 0, errors };
 }

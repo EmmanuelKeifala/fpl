@@ -1,6 +1,7 @@
 import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseCsv, requireColumns, type CsvRow } from './csv.js';
+import { forecastFromHistory, observationFromRows, type LaggedObservation } from './lagged-features.js';
 import { validateSnapshot } from './snapshots.js';
 import type { BacktestFixture, BacktestPlayer, GameweekSnapshot, PlayerGameweekResult, ReplayDataMode } from './types.js';
 
@@ -42,11 +43,15 @@ const UNAVAILABLE_FIELDS = [
 ];
 
 export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapshotsOptions): Promise<void> {
+  if (options.dataMode === 'strict') {
+    throw new Error('Strict mode requires point-in-time fixture snapshots');
+  }
   const fixtureRows = await readOptionalCsv(join(options.cacheDir, 'fixtures.csv'), 'fixtures.csv', FIXTURE_COLUMNS);
   const teamRows = await readOptionalCsv(join(options.cacheDir, 'teams.csv'), 'teams.csv');
   const teamsByName = buildTeamsByName(teamRows);
   const fixturesByGameweek = groupFixturesByGameweek(fixtureRows);
   const lastKnownPlayerRows = new Map<number, CsvRow>();
+  const playerHistory = new Map<number, LaggedObservation[]>();
   const eventMetadata = await readEventMetadata(join(options.cacheDir, 'season-bootstrap.json'));
   const snapshots: GameweekSnapshot[] = [];
 
@@ -54,12 +59,14 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
     const gwFileName = `gw-raw-${gameweek}.csv`;
     const gwRows = await readRequiredCsv(join(options.cacheDir, gwFileName), gwFileName, GW_COLUMNS);
     const xpFileName = `xp-raw-${gameweek}.csv`;
-    const xpRows = await readOptionalXpCsv(join(options.cacheDir, xpFileName), xpFileName);
+    const xpRows = options.dataMode === 'legacy'
+      ? await readOptionalXpCsv(join(options.cacheDir, xpFileName), xpFileName)
+      : [];
     const xpByElement = buildXpByElement(xpRows, xpFileName);
     const fixtures = fixturesByGameweek.get(gameweek) ?? [];
     if (fixtures.length === 0) throw new Error(`Missing fixture rows for GW${gameweek}`);
 
-    const snapshot = buildSnapshot({
+    const snapshot = options.dataMode === 'legacy' ? buildSnapshot({
       options,
       gameweek,
       gwRows,
@@ -67,6 +74,15 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
       teamsByName,
       xpByElement,
       lastKnownPlayerRows,
+      eventMetadata: eventMetadata.get(gameweek),
+    }) : buildReconstructedSnapshot({
+      options,
+      gameweek,
+      gwRows,
+      fixtures,
+      teamsByName,
+      lastKnownPlayerRows,
+      playerHistory,
       eventMetadata: eventMetadata.get(gameweek),
     });
     const validation = validateSnapshot(snapshot);
@@ -80,6 +96,96 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
     await writeFile(temp, `${JSON.stringify(snapshot, null, 2)}\n`);
     await rename(temp, target);
   }
+}
+
+function buildReconstructedSnapshot(input: {
+  options: NormalizeVaastavSnapshotsOptions;
+  gameweek: number;
+  gwRows: CsvRow[];
+  fixtures: BacktestFixture[];
+  teamsByName: Map<string, number>;
+  lastKnownPlayerRows: Map<number, CsvRow>;
+  playerHistory: Map<number, LaggedObservation[]>;
+  eventMetadata?: EventMetadata;
+}): GameweekSnapshot {
+  const rowsByPlayer = new Map<number, CsvRow[]>();
+  const resultsByPlayer = new Map<number, PlayerGameweekResult>();
+  const currentIdentity = new Map<number, CsvRow>();
+  const kickoffTimes: string[] = [];
+
+  for (const row of input.gwRows) {
+    if (POSITION_BY_NAME[row.position] === undefined) continue;
+    const playerId = parseNumber(row.element, 'element');
+    rowsByPlayer.set(playerId, [...(rowsByPlayer.get(playerId) ?? []), row]);
+    currentIdentity.set(playerId, row);
+    const result = resultsByPlayer.get(playerId) ?? { playerId, minutes: 0, totalPoints: 0 };
+    result.minutes += parseNumber(row.minutes, 'minutes');
+    result.totalPoints += parseNumber(row.total_points, 'total_points');
+    resultsByPlayer.set(playerId, result);
+    kickoffTimes.push(row.kickoff_time);
+  }
+
+  const playerIds = new Set([...input.lastKnownPlayerRows.keys(), ...currentIdentity.keys()]);
+  const players: BacktestPlayer[] = [];
+  const playerResults: PlayerGameweekResult[] = [];
+  for (const playerId of playerIds) {
+    const identityRow = input.lastKnownPlayerRows.get(playerId) ?? currentIdentity.get(playerId);
+    if (!identityRow) continue;
+    const elementType = POSITION_BY_NAME[identityRow.position];
+    if (elementType === undefined) continue;
+    const price = parseNumber(identityRow.value, 'value');
+    const forecast = forecastFromHistory(elementType, price, input.playerHistory.get(playerId) ?? []);
+    const fixtureWeight = fixtureProjectionWeight(input.fixtures, input.teamsByName.get(identityRow.team) ?? fallbackTeamId(identityRow.team));
+    players.push({
+      id: playerId,
+      webName: identityRow.name,
+      elementType,
+      team: input.teamsByName.get(identityRow.team) ?? fallbackTeamId(identityRow.team),
+      price,
+      status: 'u',
+      selectedByPercent: 0,
+      expectedPoints: Math.round(forecast.expectedPoints * fixtureWeight * 10) / 10,
+      forecastProvenance: {
+        sourceGameweek: forecast.sourceGameweek,
+        availability: forecast.sourceGameweek === null ? 'reconstructed' : 'lagged',
+        source: forecast.sourceGameweek === null
+          ? 'position prior with reconstructed GW1 identity and price'
+          : 'Vaastav rows from previously revealed gameweeks',
+      },
+    });
+    playerResults.push(resultsByPlayer.get(playerId) ?? { playerId, minutes: 0, totalPoints: 0 });
+  }
+
+  const limitations = [
+    ...UNAVAILABLE_FIELDS,
+    'fixture event assignments come from the final season schedule',
+    'GW1 identity and price are reconstructed from the first result row',
+  ];
+  const snapshot: GameweekSnapshot = {
+    season: input.options.season,
+    gameweek: input.gameweek,
+    deadline: input.eventMetadata?.deadline_time ?? earliestIsoTime(kickoffTimes),
+    knownBeforeDeadline: { players, fixtures: input.fixtures, unavailableFields: limitations },
+    actualResults: {
+      playerResults,
+      averageEntryScore: input.eventMetadata?.average_entry_score ?? 0,
+      highestScore: input.eventMetadata?.highest_score ?? 0,
+    },
+    provenance: {
+      sourceUrls: input.options.sourceUrls,
+      downloadedAt: input.options.downloadedAt,
+      snapshotVersion: input.options.snapshotVersion,
+      dataMode: input.options.dataMode,
+      rulesVersion: input.options.rulesVersion,
+      knownLimitations: limitations,
+    },
+  };
+
+  for (const [playerId, rows] of rowsByPlayer) {
+    input.playerHistory.set(playerId, [...(input.playerHistory.get(playerId) ?? []), observationFromRows(input.gameweek, rows)]);
+    input.lastKnownPlayerRows.set(playerId, currentIdentity.get(playerId)!);
+  }
+  return snapshot;
 }
 
 async function readEventMetadata(path: string): Promise<Map<number, EventMetadata>> {
@@ -269,6 +375,15 @@ function fallbackTeamId(teamName: string): number {
   let hash = 0;
   for (const char of teamName) hash = (hash * 31 + char.charCodeAt(0)) >>> 0;
   return 1000 + hash;
+}
+
+function fixtureProjectionWeight(fixtures: BacktestFixture[], team: number): number {
+  const weights: Record<number, number> = { 1: 1.2, 2: 1.1, 3: 1, 4: 0.9, 5: 0.8 };
+  const teamFixtures = fixtures.filter(fixture => fixture.teamHome === team || fixture.teamAway === team);
+  return teamFixtures.reduce((sum, fixture) => {
+    const difficulty = fixture.teamHome === team ? fixture.teamHomeDifficulty : fixture.teamAwayDifficulty;
+    return sum + (weights[difficulty] ?? 1);
+  }, 0);
 }
 
 function isNotFoundError(error: unknown): boolean {

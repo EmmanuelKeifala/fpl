@@ -65,3 +65,14 @@ Ask the agent questions like:
 - Only one chip can be played per GW
 - Defensive contribution points are included in projections
 - Price selling keeps half of profit rounded down to £0.1m
+
+## Historical Replays
+
+Use reconstructed mode for lagged-feature experiments. It excludes same-gameweek Vaastav xP and isolates corrected caches from legacy reports:
+
+```bash
+npm run backtest:prepare -- --season=2025-2026 --data-mode=reconstructed
+npm run backtest:run -- --strategy=autonomous --season=2025-2026 --data-mode=reconstructed
+```
+
+Reconstructed fixtures come from the final season schedule, so these reports cannot verify top-10k performance. `--data-mode=strict` intentionally fails until point-in-time fixture snapshots are available. Use `--data-mode=legacy` only for diagnostic comparison with older reports.

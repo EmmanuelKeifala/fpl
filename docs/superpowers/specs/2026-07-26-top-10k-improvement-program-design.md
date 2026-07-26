@@ -155,3 +155,7 @@ Do not add new automated tests during this improvement phase. Use the existing t
 - Replay and live automation call the same pure planner.
 - Projection and decision metrics are reproducible by model and dataset version.
 - The final candidate reaches a verified historical top-10k cutoff on an untouched, scoring-compatible season before being described as top-10k capable.
+
+## Corrected Baseline
+
+The first reconstructed-v2 replay excludes same-gameweek Vaastav xP, uses only prior revealed gameweeks for player form, and applies explicit season rules. The resulting autonomous baselines are 1,785 points for 2024/25 and 1,601 points for 2025/26. These totals expose how much the legacy 2,808 and 2,283 results depended on unsafe or overly informative data. They are not top-10k comparisons because fixture announcement timing, historical availability, and complete scoring parity remain unavailable.

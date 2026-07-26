@@ -12,24 +12,32 @@ import { createFairStrategy } from './strategies/fair.js';
 import { createAutonomousReplayStrategy } from './strategies/autonomous.js';
 import { createOracleStrategy } from './strategies/oracle.js';
 import { formatExperimentSummary, parseExperimentOptions, runExperimentMatrix } from './experiments/runner.js';
+import { getSeasonRules } from './season-rules.js';
+import type { ReplayDataMode } from './types.js';
 
 export { deterministicStrategy } from './strategies/baseline.js';
 
-export interface RunOptions { strategy: BacktestStrategyName; season: string; top10kCutoff?: number; }
+export interface RunOptions { strategy: BacktestStrategyName; season: string; dataMode?: ReplayDataMode; top10kCutoff?: number; }
 
 export function parseRunOptions(args: string[]): RunOptions {
   const strategyArg = args.find(arg => arg.startsWith('--strategy='));
   const seasonArg = args.find(arg => arg.startsWith('--season='));
   const top10kArg = args.find(arg => arg.startsWith('--top10k-cutoff='));
+  const dataModeArg = args.find(arg => arg.startsWith('--data-mode='));
   const strategy = (strategyArg?.split('=')[1] ?? 'baseline') as BacktestStrategyName;
   if (!['baseline', 'fair', 'autonomous', 'oracle'].includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
   const top10kCutoff = top10kArg ? Number(top10kArg.split('=')[1]) : undefined;
   if (top10kCutoff !== undefined && (!Number.isInteger(top10kCutoff) || top10kCutoff <= 0)) {
     throw new Error('Top-10k cutoff must be a positive integer');
   }
+  const dataMode = dataModeArg?.split('=')[1] as ReplayDataMode | undefined;
+  if (dataMode !== undefined && !['legacy', 'reconstructed', 'strict'].includes(dataMode)) {
+    throw new Error(`Unknown data mode ${dataMode}`);
+  }
   return {
     strategy,
     season: parseSeason(seasonArg?.split('=')[1] ?? DEFAULT_SEASON),
+    ...(dataMode !== undefined ? { dataMode } : {}),
     ...(top10kCutoff !== undefined ? { top10kCutoff } : {}),
   };
 }
@@ -50,7 +58,6 @@ interface PrepareDataDependencies {
 }
 
 const DEFAULT_SEASON = '2024-2025';
-const LEGACY_RULES_VERSION = 'legacy-global-v1';
 
 function parseSeason(value: string): string {
   const match = /^(\d{4})-(\d{4})$/.exec(value);
@@ -66,7 +73,7 @@ function toVaastavSeasonPath(season: string): string {
   return `${start}-${end.slice(2)}`;
 }
 
-function getVaastavSources(season: string): { sourceUrls: string[]; sourceDescriptors: BacktestSourceDescriptor[] } {
+function getVaastavSources(season: string, dataMode: ReplayDataMode): { sourceUrls: string[]; sourceDescriptors: BacktestSourceDescriptor[] } {
   const vaastavSeason = toVaastavSeasonPath(season);
   const base = `https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/${vaastavSeason}`;
   const listing = `https://api.github.com/repos/vaastav/Fantasy-Premier-League/contents/data/${vaastavSeason}?ref=master`;
@@ -79,7 +86,7 @@ function getVaastavSources(season: string): { sourceUrls: string[]; sourceDescri
     `${base}/fixtures.csv`,
     `${base}/teams.csv`,
     ...Array.from({ length: 38 }, (_, index) => `${base}/gws/gw${index + 1}.csv`),
-    ...Array.from({ length: 38 }, (_, index) => `${base}/gws/xP${index + 1}.csv`),
+    ...(dataMode === 'legacy' ? Array.from({ length: 38 }, (_, index) => `${base}/gws/xP${index + 1}.csv`) : []),
     ...(archivedBootstrap ? [archivedBootstrap] : []),
   ];
 
@@ -97,39 +104,42 @@ function getVaastavSources(season: string): { sourceUrls: string[]; sourceDescri
         fileName: `gw-raw-${index + 1}.csv`,
         format: 'text' as const,
       })),
-      ...Array.from({ length: 38 }, (_, index) => ({
+      ...(dataMode === 'legacy' ? Array.from({ length: 38 }, (_, index) => ({
         url: `${base}/gws/xP${index + 1}.csv`,
         fileName: `xp-raw-${index + 1}.csv`,
         format: 'text' as const,
         optional: true,
-      })),
+      })) : []),
     ],
   };
 }
 
-function cacheDir(season: string): string {
-  return process.env.FPL_BACKTEST_CACHE_DIR ?? getDefaultBacktestCacheDir(season);
+function cacheDir(season: string, dataMode: ReplayDataMode): string {
+  return process.env.FPL_BACKTEST_CACHE_DIR ?? getDefaultBacktestCacheDir(season, dataMode);
 }
 
 export function formatPrepareDataMessage(preparedCacheDir: string, season = DEFAULT_SEASON): string {
   return `Prepared ${season} replay cache at ${preparedCacheDir} with gw-1.json through gw-38.json.`;
 }
 
-export async function prepareData(options: Pick<RunOptions, 'season'> = { season: DEFAULT_SEASON }): Promise<void> {
+export async function prepareData(options: Pick<RunOptions, 'season' | 'dataMode'> = { season: DEFAULT_SEASON }): Promise<void> {
   await prepareDataWithDependencies({}, options);
 }
 
-export async function prepareDataWithDependencies(dependencies: PrepareDataDependencies = {}, options: Pick<RunOptions, 'season'> = { season: DEFAULT_SEASON }): Promise<void> {
+export async function prepareDataWithDependencies(dependencies: PrepareDataDependencies = {}, options: Pick<RunOptions, 'season' | 'dataMode'> = { season: DEFAULT_SEASON }): Promise<void> {
   const season = parseSeason(options.season);
-  const { sourceUrls, sourceDescriptors } = getVaastavSources(season);
-  const preparedCacheDir = dependencies.preparedCacheDir ?? cacheDir(season);
+  const dataMode = options.dataMode ?? 'reconstructed';
+  if (dataMode === 'strict') throw new Error('Strict mode requires point-in-time fixture snapshots');
+  const rules = getSeasonRules(season);
+  const { sourceUrls, sourceDescriptors } = getVaastavSources(season, dataMode);
+  const preparedCacheDir = dependencies.preparedCacheDir ?? cacheDir(season, dataMode);
   const downloadedAt = (dependencies.now?.() ?? new Date()).toISOString();
   const dataSource =
     dependencies.dataSource ??
     new BacktestDataSource({
       season,
-      dataMode: 'legacy',
-      rulesVersion: LEGACY_RULES_VERSION,
+      dataMode,
+      rulesVersion: rules.version,
       cacheDir: preparedCacheDir,
       sourceUrls,
       sources: sourceDescriptors,
@@ -143,9 +153,9 @@ export async function prepareDataWithDependencies(dependencies: PrepareDataDepen
       gameweeks: Array.from({ length: 38 }, (_, index) => index + 1),
       sourceUrls,
       downloadedAt,
-      snapshotVersion: `${season}-legacy-v2`,
-      dataMode: 'legacy',
-      rulesVersion: LEGACY_RULES_VERSION,
+      snapshotVersion: `${season}-${dataMode}-v2`,
+      dataMode,
+      rulesVersion: rules.version,
     });
   } catch (error) {
     await removeManifest(preparedCacheDir);
@@ -164,7 +174,9 @@ async function removeManifest(preparedCacheDir: string): Promise<void> {
 
 export async function runSeason(options: RunOptions = { strategy: 'baseline', season: DEFAULT_SEASON }): Promise<void> {
   const season = parseSeason(options.season);
-  const store = new FileSnapshotStore(cacheDir(season));
+  const dataMode = options.dataMode ?? 'reconstructed';
+  getSeasonRules(season);
+  const store = new FileSnapshotStore(cacheDir(season, dataMode));
   const snapshots = await Promise.all(Array.from({ length: 38 }, (_, index) => store.getSnapshot(index + 1)));
   const firstSnapshot = snapshots[0]!;
   const strategy = options.strategy === 'fair'
@@ -182,8 +194,8 @@ export async function runSeason(options: RunOptions = { strategy: 'baseline', se
   });
   const state = await engine.run();
   const report = buildBacktestReport(state, firstSnapshot.provenance, options.strategy, snapshots, options.top10kCutoff);
-  const reportPath = join(cacheDir(season), `report-${options.strategy}.json`);
-  const weeklyPath = join(cacheDir(season), `report-${options.strategy}-weekly.csv`);
+  const reportPath = join(cacheDir(season, dataMode), `report-${options.strategy}-${dataMode}.json`);
+  const weeklyPath = join(cacheDir(season, dataMode), `report-${options.strategy}-${dataMode}-weekly.csv`);
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
   await writeFile(weeklyPath, [
     'gameweek,points,average,difference,cumulative_points,cumulative_average,cumulative_difference',

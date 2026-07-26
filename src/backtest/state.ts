@@ -1,16 +1,16 @@
-import { calculateSellingPrice, FPL_RULES, getFreeTransfersAfterGameweek, getTransferHitCost, isChipAvailableInGameweek } from '../strategy/rules.js';
+import { calculateSellingPrice, FPL_RULES, getTransferHitCost, isChipAvailableInGameweek } from '../strategy/rules.js';
 import { validateFormation, validateSquad, type SquadPlayer } from '../strategy/squad.js';
 import type { BacktestDecision, BacktestPlayer, GameweekSnapshot, ManagerState, SquadPick, WeeklyResult } from './types.js';
-
-const INITIAL_CHIPS = ['wildcard', 'freehit', 'bboost', '3xc'] as const;
+import { getReplayFreeTransfers, getSeasonRules } from './season-rules.js';
 
 export function createInitialState(season: string): ManagerState {
+  const rules = getSeasonRules(season);
   return {
     season,
     squad: [],
     bank: FPL_RULES.initialBudget,
     freeTransfers: 1,
-    chipsAvailable: [...INITIAL_CHIPS],
+    chipsAvailable: [...rules.initialChips],
     totalPoints: 0,
     weeklyResults: [],
     decisions: [],
@@ -105,7 +105,8 @@ export function applyGameweekDecision(
     season: state.season,
     squad: persistedSquad,
     bank: persistedBank,
-    freeTransfers: getFreeTransfersAfterGameweek({
+    freeTransfers: getReplayFreeTransfers({
+      rules: getSeasonRules(state.season),
       previousFreeTransfers: state.freeTransfers,
       transfersMade: transfersForFreeTransferCarryover,
       nextGameweek: decision.gameweek + 1,
@@ -147,13 +148,14 @@ function applyAutomaticSubstitutions(
 }
 
 function nextChipInventory(state: ManagerState, decision: BacktestDecision): typeof state.chipsAvailable {
+  const rules = getSeasonRules(state.season);
   const chips = [...state.chipsAvailable];
   if (decision.chip) {
     const index = chips.indexOf(decision.chip);
     if (index >= 0) chips.splice(index, 1);
   }
-  if (state.season === '2025-2026' && decision.gameweek === FPL_RULES.firstHalfFinalGameweek) {
-    return [...INITIAL_CHIPS];
+  if (decision.gameweek === rules.chipResetAfterGameweek) {
+    return [...rules.initialChips];
   }
   return chips;
 }

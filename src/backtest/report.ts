@@ -61,6 +61,7 @@ export function buildBacktestReport(
   top10kCutoff?: number,
 ): BacktestReport {
   const integrityWarning = getIntegrityWarning(provenance.dataMode);
+  const verifiedTop10kCutoff = provenance.dataMode === 'strict' ? top10kCutoff : undefined;
   const transfers = state.decisions.flatMap(decision => decision.transfers.map(transfer => ({
     gameweek: decision.gameweek,
     out: transfer.out,
@@ -101,11 +102,11 @@ export function buildBacktestReport(
     captainPointsTotal: state.weeklyResults.reduce((total, result) => total + result.captainPoints, 0),
     benchPointsTotal: state.weeklyResults.reduce((total, result) => total + result.benchPoints, 0),
     estimatedRankPercentile: null,
-    top10kCutoff: top10kCutoff ?? null,
-    pointsVsTop10k: top10kCutoff === undefined ? null : state.totalPoints - top10kCutoff,
-    metTop10kBenchmark: top10kCutoff === undefined || provenance.dataMode !== 'strict'
+    top10kCutoff: verifiedTop10kCutoff ?? null,
+    pointsVsTop10k: verifiedTop10kCutoff === undefined ? null : state.totalPoints - verifiedTop10kCutoff,
+    metTop10kBenchmark: verifiedTop10kCutoff === undefined
       ? null
-      : state.totalPoints >= top10kCutoff,
+      : state.totalPoints >= verifiedTop10kCutoff,
     weekly: state.weeklyResults,
     weeklyBenchmark,
     averageTotal: cumulativeAverage,
