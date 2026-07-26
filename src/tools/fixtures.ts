@@ -98,7 +98,7 @@ export const getFixturesTool = tool({
         .map(f => {
           const isHome = f.team_h === targetTeamId;
           const opponent = engine.getTeam(isHome ? f.team_a : f.team_h);
-          const fdr = isHome ? f.team_a_difficulty : f.team_h_difficulty;
+          const fdr = isHome ? f.team_h_difficulty : f.team_a_difficulty;
           
           return {
             gameweek: f.event,
@@ -145,7 +145,7 @@ export const getFixturesTool = tool({
       
       const fdrValues = teamFix.map(f => {
         const isHome = f.team_h === teamId;
-        return isHome ? f.team_a_difficulty : f.team_h_difficulty;
+        return isHome ? f.team_h_difficulty : f.team_a_difficulty;
       });
       
       const avgFDR = fdrValues.length > 0
@@ -159,7 +159,7 @@ export const getFixturesTool = tool({
         fixtures: teamFix.slice(0, 5).map(f => {
           const isHome = f.team_h === teamId;
           const opponent = engine.getTeam(isHome ? f.team_a : f.team_h);
-          const fdr = isHome ? f.team_a_difficulty : f.team_h_difficulty;
+          const fdr = isHome ? f.team_h_difficulty : f.team_a_difficulty;
           return `${opponent?.short_name || '?'}(${isHome ? 'H' : 'A'})[${fdr}]`;
         }).join(', '),
       };

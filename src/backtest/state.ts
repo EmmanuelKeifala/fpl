@@ -63,11 +63,21 @@ export function applyGameweekDecision(
     throw new Error('Decision is over budget');
   }
   validateUniqueSquad(squad);
-  validateSquadRules(squad, bank, playersById);
+  if (decision.squad || decision.transfers.length > 0) {
+    validateSquadRules(squad, bank, playersById);
+  }
   validateLineup(decision, squad, playersById);
 
-  const grossPoints = scorePlayers(decision.startingXi, resultsByPlayerId);
-  const captainScore = resultsByPlayerId.get(decision.captain)?.totalPoints ?? 0;
+  const effectiveStartingXi = decision.chip === 'bboost'
+    ? decision.startingXi
+    : applyAutomaticSubstitutions(decision.startingXi, decision.bench, playersById, resultsByPlayerId);
+  const grossPoints = scorePlayers(effectiveStartingXi, resultsByPlayerId);
+  const captainPlayed = (resultsByPlayerId.get(decision.captain)?.minutes ?? 0) > 0;
+  const viceCaptainPlayed = (resultsByPlayerId.get(decision.viceCaptain)?.minutes ?? 0) > 0;
+  const effectiveCaptain = captainPlayed ? decision.captain : viceCaptainPlayed ? decision.viceCaptain : decision.captain;
+  const captainScore = (captainPlayed || viceCaptainPlayed)
+    ? resultsByPlayerId.get(effectiveCaptain)?.totalPoints ?? 0
+    : 0;
   const captainMultiplier = decision.chip === '3xc' ? 3 : 2;
   const captainPoints = captainScore * (captainMultiplier - 1);
   const benchPoints = scorePlayers(decision.bench, resultsByPlayerId);
@@ -100,11 +110,52 @@ export function applyGameweekDecision(
       transfersMade: transfersForFreeTransferCarryover,
       nextGameweek: decision.gameweek + 1,
     }),
-    chipsAvailable: decision.chip ? state.chipsAvailable.filter(chip => chip !== decision.chip) : [...state.chipsAvailable],
+    chipsAvailable: nextChipInventory(state, decision),
     totalPoints: state.totalPoints + points,
     weeklyResults: [...state.weeklyResults, weeklyResult],
     decisions: [...state.decisions, decision],
   };
+}
+
+function applyAutomaticSubstitutions(
+  startingXi: number[],
+  bench: number[],
+  playersById: Map<number, BacktestPlayer>,
+  resultsByPlayerId: Map<number, { minutes: number; totalPoints: number }>
+): number[] {
+  const effective = [...startingXi];
+  const missing = startingXi.filter(playerId => (resultsByPlayerId.get(playerId)?.minutes ?? 0) === 0);
+  const availableBench = bench.filter(playerId => (resultsByPlayerId.get(playerId)?.minutes ?? 0) > 0);
+
+  for (const outgoingId of missing) {
+    const outgoing = getPlayer(outgoingId, playersById);
+    const substituteIndex = availableBench.findIndex(candidateId => {
+      const candidate = getPlayer(candidateId, playersById);
+      if (outgoing.elementType === 1) return candidate.elementType === 1;
+      if (candidate.elementType === 1) return false;
+      const candidateTypes = effective
+        .map(playerId => playerId === outgoingId ? candidateId : playerId)
+        .map(playerId => getPlayer(playerId, playersById).elementType);
+      return validateFormation(candidateTypes).valid;
+    });
+    if (substituteIndex >= 0) {
+      const substitute = availableBench.splice(substituteIndex, 1)[0]!;
+      effective[effective.indexOf(outgoingId)] = substitute;
+    }
+  }
+  return effective.filter(playerId => (resultsByPlayerId.get(playerId)?.minutes ?? 0) > 0);
+}
+
+function nextChipInventory(state: ManagerState, decision: BacktestDecision): typeof state.chipsAvailable {
+  const chips = [...state.chipsAvailable];
+  if (decision.chip) {
+    const index = chips.indexOf(decision.chip);
+    if (index >= 0) chips.splice(index, 1);
+  }
+  if (state.season === '2025-2026' && decision.gameweek === FPL_RULES.firstHalfFinalGameweek) {
+    return [...INITIAL_CHIPS];
+  }
+  return chips;
 }
 
 function createSquadFromIds(playerIds: number[], playersById: Map<number, BacktestPlayer>): SquadPick[] {

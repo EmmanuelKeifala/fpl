@@ -4,10 +4,10 @@ import { getFPLClient } from '../api/client.js';
 import { getOptimizationEngine, resetOptimizationEngine } from '../engine/optimizer.js';
 import { 
   buildDecisionContext, 
-  findBestTransfers, 
+  optimizeTransferPlan,
   selectOptimalCaptain, 
+  selectOptimalLineup,
   evaluateChips,
-  gatherIntelligence,
   type DecisionContext 
 } from './decisions.js';
 import { 
@@ -26,8 +26,9 @@ import {
   notifyAlert, 
   notifySummary 
 } from './notify.js';
-import { logDecision, saveGameweekSnapshot } from '../db/client.js';
+import { getGameweekSnapshot, logDecision, saveGameweekSnapshot } from '../db/client.js';
 import type { GameweekHistory, ChipUsage } from '../api/types.js';
+import { captureLearningSnapshot, reconcileFinishedGameweek } from './learning.js';
 
 type RunnerPhase = 'monitor' | 'plan' | 'execute' | 'post-deadline';
 
@@ -61,12 +62,13 @@ async function initialize(): Promise<boolean> {
   console.log('\n========================================');
   console.log('FPL AUTONOMOUS RUNNER - Starting...');
   console.log('========================================\n');
-  
+
   const limits = getSafetyLimits();
   console.log(`[CONFIG] Safety Limits:`);
   console.log(`  - Max Transfers/Week: ${limits.maxTransfersPerWeek}`);
   console.log(`  - Min xP Gain for Hit: ${limits.minXPGainForHit}`);
   console.log(`  - Auto-Execute Transfers: ${limits.autoExecuteTransfers}`);
+  console.log(`  - Auto-Set Lineup: ${limits.autoSetLineup}`);
   console.log(`  - Auto-Play Chips: ${limits.autoPlayChips}`);
   console.log(`  - Emergency Stop: ${limits.emergencyStop}`);
   console.log(`  - Poll Interval: ${POLL_INTERVAL / 60000} minutes`);
@@ -105,7 +107,8 @@ async function initialize(): Promise<boolean> {
 async function refreshData(): Promise<void> {
   console.log('\n--- Refreshing FPL Data ---');
   
-  // Reset and reinitialize optimizer for fresh data
+  // Clear both layers so late price, status, and deadline updates are visible.
+  getFPLClient().clearCache();
   resetOptimizationEngine();
   await getOptimizationEngine();
   
@@ -115,23 +118,20 @@ async function refreshData(): Promise<void> {
 async function runMonitorPhase(context: DecisionContext): Promise<void> {
   console.log('\n=== MONITOR PHASE (>24h to deadline) ===\n');
   
-  // Gather intelligence on status changes
-  const intelligence = await gatherIntelligence();
-  
-  if (intelligence.statusChanges.length > 0) {
-    console.log(`[INTELLIGENCE] Found ${intelligence.statusChanges.length} player status changes:`);
-    for (const change of intelligence.statusChanges) {
+  if (context.playerStatusChanges.length > 0) {
+    console.log(`[INTELLIGENCE] Found ${context.playerStatusChanges.length} player status changes:`);
+    for (const change of context.playerStatusChanges) {
       console.log(`  - ${change.player.web_name}: ${change.oldStatus} -> ${change.newStatus}`);
     }
     await notifyAlert(
       'Player Status Changes',
-      `${intelligence.statusChanges.length} players changed status this cycle. Check your team!`
+      `${context.playerStatusChanges.length} players changed status this cycle. Check your team!`
     );
   }
   
-  if (intelligence.newsAlerts.length > 0) {
+  if (context.newsAlerts.length > 0) {
     console.log('[INTELLIGENCE] News alerts:');
-    for (const alert of intelligence.newsAlerts.slice(0, 5)) {
+    for (const alert of context.newsAlerts.slice(0, 5)) {
       console.log(`  - ${alert}`);
     }
   }
@@ -158,14 +158,16 @@ async function runMonitorPhase(context: DecisionContext): Promise<void> {
 async function runPlanPhase(context: DecisionContext): Promise<void> {
   console.log('\n=== PLAN PHASE (2-24h to deadline) ===\n');
   
-  // Find best transfers
-  const transferCandidates = await findBestTransfers(context.myTeam!, 5);
+  const limits = getSafetyLimits();
+  const transferPlan = await optimizeTransferPlan(
+    context.myTeam!,
+    Math.max(0, limits.maxTransfersPerWeek - context.myTeam!.transfers.made),
+    6
+  );
   
-  console.log(`[PLAN] Found ${transferCandidates.length} transfer candidates:`);
-  for (const candidate of transferCandidates) {
-    console.log(`  - ${candidate.playerOut.web_name} OUT -> ${candidate.playerIn.web_name} IN`);
-    console.log(`    xP Gain: ${candidate.xpGain}, Net: ${candidate.netGain}, Confidence: ${(candidate.confidence * 100).toFixed(0)}%`);
-    console.log(`    Reason: ${candidate.reasoning}`);
+  console.log(`[PLAN] Optimized ${transferPlan.horizon}-GW plan: ${transferPlan.transfers.length} transfer(s), net gain ${transferPlan.netGain.toFixed(1)} xP`);
+  for (const transfer of transferPlan.transfers) {
+    console.log(`  - ${transfer.playerOut.web_name} OUT -> ${transfer.playerIn.web_name} IN`);
   }
   
   // Select captain
@@ -186,7 +188,8 @@ async function runPlanPhase(context: DecisionContext): Promise<void> {
     message: `${context.gameweek} | ${context.hoursToDeadline.toFixed(1)}h to deadline`,
     data: {
       'Phase': 'Plan',
-      'Transfer Candidates': transferCandidates.length,
+      'Transfers': transferPlan.transfers.length,
+      'Projected Net Gain': transferPlan.netGain,
       'Captain': captainResult.captain.web_name,
       'Chips Recommended': chipRecommendations.length,
       'Team Health Alerts': context.teamHealth.alerts.length,
@@ -199,21 +202,29 @@ async function runPlanPhase(context: DecisionContext): Promise<void> {
 
 async function runExecutePhase(context: DecisionContext): Promise<void> {
   console.log('\n=== EXECUTE PHASE (<2h to deadline) ===\n');
-  
+
   const limits = getSafetyLimits();
-  
-  // Find best transfer
-  const transferCandidates = await findBestTransfers(context.myTeam!, 3);
-  const bestTransfer = transferCandidates[0];
-  
-  if (bestTransfer) {
-    console.log(`[EXECUTE] Best transfer: ${bestTransfer.playerOut.web_name} -> ${bestTransfer.playerIn.web_name}`);
-    console.log(`  xP Gain: ${bestTransfer.xpGain}, Hit Cost: ${bestTransfer.hitCost}, Net: ${bestTransfer.netGain}`);
-    
+
+  const optimizedPlan = await optimizeTransferPlan(
+    context.myTeam!,
+    Math.max(0, limits.maxTransfersPerWeek - context.myTeam!.transfers.made),
+    6
+  );
+  const transferPlan = optimizedPlan.transfers;
+  const totalXPGain = optimizedPlan.expectedGain;
+  const hitCost = optimizedPlan.hitCost;
+
+  if (transferPlan.length > 0) {
+    console.log(`[EXECUTE] Optimized ${optimizedPlan.horizon}-GW plan: ${transferPlan.length} move(s), net gain ${optimizedPlan.netGain.toFixed(1)} xP`);
+    for (const transfer of transferPlan) {
+      console.log(`  - ${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`);
+    }
+
     const validation = validateTransfer(
-      bestTransfer.xpGain,
-      bestTransfer.hitCost,
-      context.freeTransfers
+      totalXPGain,
+      hitCost,
+      context.freeTransfers,
+      context.myTeam!.transfers.made
     );
     
     console.log(`  Validation: ${validation.allowed ? 'APPROVED' : 'BLOCKED'} - ${validation.reason}`);
@@ -221,23 +232,39 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
     if (validation.allowed) {
       try {
         const client = getFPLClient();
-        const result = await client.makeTransfer(
-          bestTransfer.playerOut.id, 
-          bestTransfer.playerIn.id, 
-          context.gameweek,
-          bestTransfer.playerIn.now_cost,
-          bestTransfer.sellingPrice
+        const result = await client.makeTransfers(
+          transferPlan.map(transfer => ({
+            playerOut: transfer.playerOut.id,
+            playerIn: transfer.playerIn.id,
+            purchasePrice: transfer.playerIn.now_cost,
+            sellingPrice: transfer.sellingPrice,
+          })),
+          context.gameweek
         );
         
         if (result.success) {
-          recordTransfer();
-          await notifyTransfer(
-            bestTransfer.playerOut,
-            bestTransfer.playerIn,
-            bestTransfer.xpGain,
-            bestTransfer.hitCost
-          );
-          console.log('[EXECUTE] Transfer executed successfully!\n');
+          for (const _transfer of transferPlan) recordTransfer();
+          await logDecision({
+            gameweek: context.gameweek,
+            decisionType: 'transfer',
+            action: JSON.stringify({
+              status: 'executed',
+              transfers: transferPlan.map(transfer => ({
+                playerOutId: transfer.playerOut.id,
+                playerInId: transfer.playerIn.id,
+                playerOut: transfer.playerOut.web_name,
+                playerIn: transfer.playerIn.web_name,
+              })),
+            }),
+            reasoning: `${optimizedPlan.horizon}-GW full-squad optimization; net gain ${optimizedPlan.netGain.toFixed(1)} xP`,
+            expectedPoints: totalXPGain,
+            hitsTaken: hitCost / 4,
+            createdAt: new Date(),
+          });
+          for (const transfer of transferPlan) {
+            await notifyTransfer(transfer.playerOut, transfer.playerIn, transfer.xpGain, hitCost);
+          }
+          console.log('[EXECUTE] Transfer plan executed successfully!\n');
         } else {
           console.error('[EXECUTE] Transfer failed:', result.message);
           await notifyAlert('Transfer Failed', result.message);
@@ -251,10 +278,10 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
       await logDecision({
         gameweek: context.gameweek,
         decisionType: 'transfer',
-        action: `${bestTransfer.playerOut.web_name} -> ${bestTransfer.playerIn.web_name}`,
+        action: transferPlan.map(transfer => `${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`).join(', '),
         reasoning: validation.reason,
-        expectedPoints: bestTransfer.xpGain,
-        hitsTaken: bestTransfer.hitCost > 0 ? 1 : 0,
+        expectedPoints: totalXPGain,
+        hitsTaken: hitCost / 4,
         createdAt: new Date(),
       });
     }
@@ -262,48 +289,52 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
     console.log('[EXECUTE] No transfer candidates found.\n');
   }
   
-  // Select and set captain
-  const captainResult = await selectOptimalCaptain(context.myTeam!);
-  console.log(`[EXECUTE] Captain: ${captainResult.captain.web_name} (${captainResult.xp.toFixed(1)} xP)`);
-  
-  // For captain, we just notify - actual captaincy must be set manually via FPL
-  await notifyCaptain(
-    captainResult.captain,
-    captainResult.xp,
-    captainResult.alternatives.map(p => p.web_name)
+  const client = getFPLClient();
+  const latestTeam = await client.getMyTeam();
+  const lineup = await selectOptimalLineup(latestTeam);
+  const chipRecommendations = await evaluateChips(latestTeam, context.gameweek);
+  const supportedChip = chipRecommendations.find(chip =>
+    (chip.chip === 'bboost' || chip.chip === '3xc') &&
+    validateChip(chip.chip, chip.recommended, chip.confidence).allowed
   );
-  
-  // Evaluate chips
-  const chipRecommendations = await evaluateChips(context.myTeam!, context.gameweek);
-  
-  for (const chipRec of chipRecommendations) {
-    const chipValidation = validateChip(chipRec.chip, chipRec.recommended, chipRec.confidence);
-    
-    console.log(`[EXECUTE] Chip ${chipRec.chip}: ${chipValidation.allowed ? 'EXECUTING' : 'BLOCKED'} - ${chipValidation.reason}`);
-    
-    if (chipValidation.allowed) {
-      try {
-        const client = getFPLClient();
-        const chipApiName = chipRec.chip === 'bboost' ? 'bboost' : chipRec.chip === '3xc' ? '3xc' : chipRec.chip;
-        const result = await client.playChip(
-          chipApiName as 'wildcard' | 'freehit' | 'bboost' | '3xc',
-          context.gameweek
-        );
-        
-        if (result.success) {
-          await notifyChip(chipRec.chip, context.gameweek, chipRec.expectedGain, true);
-          console.log(`[EXECUTE] Chip ${chipRec.chip} played!\n`);
-        } else {
-          console.error(`[EXECUTE] Chip ${chipRec.chip} failed:`, result.message);
-          await notifyAlert('Chip Failed', result.message);
-        }
-      } catch (error) {
-        console.error(`[EXECUTE] Chip ${chipRec.chip} failed:`, error);
-        await notifyAlert('Chip Failed', `Failed to play ${chipRec.chip}: ${error}`);
+  const chip = supportedChip?.chip as 'bboost' | '3xc' | undefined;
+
+  if (limits.autoSetLineup && !checkEmergencyStop()) {
+    const currentPicks = new Map(latestTeam.picks.map(pick => [pick.element, pick]));
+    const changed = lineup.selection.some(pick => {
+      const current = currentPicks.get(pick.element);
+      return !current || current.position !== pick.position || current.is_captain !== pick.isCaptain || current.is_vice_captain !== pick.isViceCaptain;
+    });
+
+    if (changed || chip) {
+      const result = await client.updateTeam(lineup.selection, chip ?? null);
+      if (!result.success) {
+        await notifyAlert('Team Update Failed', result.message);
+      } else {
+        await logDecision({
+          gameweek: context.gameweek,
+          decisionType: chip ? 'chip' : 'captain',
+          action: JSON.stringify({
+            captain: lineup.captain.web_name,
+            viceCaptain: lineup.viceCaptain.web_name,
+            startingXI: lineup.startingXI.map(player => player.web_name),
+            bench: lineup.bench.map(player => player.web_name),
+            chip: chip ?? null,
+          }),
+          reasoning: `Highest projected legal XI (${lineup.expectedPoints.toFixed(1)} xP)`,
+          expectedPoints: lineup.expectedPoints,
+          hitsTaken: 0,
+          createdAt: new Date(),
+        });
+        console.log(`[EXECUTE] Lineup set. Captain ${lineup.captain.web_name}, vice ${lineup.viceCaptain.web_name}.`);
+        await notifyCaptain(lineup.captain, lineup.captainExpectedPoints, [lineup.viceCaptain.web_name]);
+        if (supportedChip) await notifyChip(supportedChip.chip, context.gameweek, supportedChip.expectedGain, true);
       }
     } else {
-      await notifyChip(chipRec.chip, context.gameweek, chipRec.expectedGain, false);
+      console.log('[EXECUTE] Existing lineup and captaincy are already optimal.');
     }
+  } else {
+    console.log('[EXECUTE] Automatic lineup management is disabled.');
   }
 }
 
@@ -313,6 +344,13 @@ async function runPostDeadline(context: DecisionContext): Promise<void> {
   // Check if we already processed this GW
   if (runnerState.lastGWProcessed === context.gameweek) {
     console.log('[POST] Already processed this gameweek.\n');
+    return;
+  }
+
+  const existingSnapshot = await getGameweekSnapshot(context.gameweek);
+  if (existingSnapshot) {
+    runnerState.lastGWProcessed = context.gameweek;
+    console.log('[POST] Snapshot already exists for this gameweek.\n');
     return;
   }
   
@@ -335,14 +373,20 @@ async function runPostDeadline(context: DecisionContext): Promise<void> {
         overallRank: currentGWHistory.overall_rank,
         gameweekPoints: currentGWHistory.points,
         gameweekRank: currentGWHistory.rank,
-        teamValue: currentGWHistory.value,
-        bank: currentGWHistory.bank,
+        teamValue: currentGWHistory.value / 10,
+        bank: currentGWHistory.bank / 10,
         chipsUsed: JSON.stringify(history.chips.filter((c: ChipUsage) => c.event === context.gameweek).map((c: ChipUsage) => c.name)),
         transfersMade: currentGWHistory.event_transfers,
         transfersCost: currentGWHistory.event_transfers_cost,
         pointsOnBench: currentGWHistory.points_on_bench,
         createdAt: new Date(),
       });
+
+      try {
+        await reconcileFinishedGameweek(context.gameweek);
+      } catch (error) {
+        console.error(`[LEARNING] Failed to reconcile GW${context.gameweek} forecasts:`, error);
+      }
       
       await notifySummary(
         context.gameweek,
@@ -377,13 +421,22 @@ async function runCycle(): Promise<void> {
       console.log('[CYCLE] Could not build decision context. Skipping cycle.\n');
       return;
     }
+
+    await captureLearningSnapshot(context.gameweek, context.hoursToDeadline <= PRE_DEADLINE_HOURS);
     
-    // Determine phase
-    const deadlineInfo = (await getOptimizationEngine()).getNextDeadline();
+    const engine = await getOptimizationEngine();
+    const latestFinishedGameweek = engine.getGameweeks()
+      .filter(gameweek => gameweek.finished)
+      .sort((a, b) => b.id - a.id)[0];
+
+    if (latestFinishedGameweek && latestFinishedGameweek.id > runnerState.lastGWProcessed) {
+      await runPostDeadline({ ...context, gameweek: latestFinishedGameweek.id });
+    }
+
+    // Determine the phase for the next actionable deadline.
+    const deadlineInfo = engine.getNextDeadline();
     const hoursToDeadline = deadlineInfo?.hoursRemaining ?? context.hoursToDeadline;
-    const isPostDeadline = deadlineInfo === null || hoursToDeadline < 0;
-    
-    const newPhase = getPhase(hoursToDeadline, isPostDeadline);
+    const newPhase = getPhase(deadlineInfo ? hoursToDeadline : Number.POSITIVE_INFINITY, false);
     
     if (newPhase !== runnerState.phase) {
       console.log(`[PHASE] Transition: ${runnerState.phase} -> ${newPhase}`);

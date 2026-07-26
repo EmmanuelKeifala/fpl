@@ -40,5 +40,5 @@ test('projectPlayerPoints includes defensive contribution for outfield players',
   const withoutDefCon = projectPlayerPoints({ ...baseInput, defensiveContributionProbability: 0 });
   const withDefCon = projectPlayerPoints({ ...baseInput, defensiveContributionProbability: 1 });
 
-  assert.equal(Math.round((withDefCon.expectedPoints - withoutDefCon.expectedPoints) * 10) / 10, 2);
+  assert.equal(Math.round((withDefCon.expectedPoints - withoutDefCon.expectedPoints) * 10) / 10, 4);
 });

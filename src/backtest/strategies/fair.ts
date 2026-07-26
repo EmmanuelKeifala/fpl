@@ -98,14 +98,14 @@ export function createFairStrategy(options: FairStrategyOptions = {}): BacktestS
   };
 }
 
-function availableRebuildBudget(state: ManagerState, playersById: Map<number, BacktestPlayer>): number {
+export function availableRebuildBudget(state: ManagerState, playersById: Map<number, BacktestPlayer>): number {
   return state.squad.reduce((total, pick) => {
     const player = playersById.get(pick.playerId);
     return total + calculateSellingPrice(pick.purchasePrice, player?.price ?? pick.sellingPrice);
   }, state.bank);
 }
 
-function buildSquadWithinBudget(players: BacktestPlayer[], budget: number): number[] | undefined {
+export function buildSquadWithinBudget(players: BacktestPlayer[], budget: number): number[] | undefined {
   const ranked = rankPlayers(players);
   const selected: BacktestPlayer[] = [];
   let spent = 0;
@@ -178,7 +178,7 @@ function projectedSquad(playerIds: number[], playersById: Map<number, BacktestPl
   return playerIds.reduce((total, playerId) => total + (playersById.get(playerId)?.expectedPoints ?? 0), 0);
 }
 
-function replacementTransfers(currentIds: number[], rebuiltIds: number[]): TransferMove[] {
+export function replacementTransfers(currentIds: number[], rebuiltIds: number[]): TransferMove[] {
   const outgoing = [...currentIds].filter(playerId => !rebuiltIds.includes(playerId)).sort((a, b) => a - b);
   const incoming = [...rebuiltIds].filter(playerId => !currentIds.includes(playerId)).sort((a, b) => a - b);
   return outgoing.map((out, index) => ({ out, in: incoming[index]! }));

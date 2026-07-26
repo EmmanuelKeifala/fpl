@@ -53,7 +53,7 @@ export const getPlayerStatsTool = tool({
       .map(f => {
         const isHome = f.team_h === player.team;
         const opponent = engine.getTeam(isHome ? f.team_a : f.team_h);
-        const fdr = isHome ? f.team_a_difficulty : f.team_h_difficulty;
+        const fdr = isHome ? f.team_h_difficulty : f.team_a_difficulty;
         
         return {
           gameweek: f.event,

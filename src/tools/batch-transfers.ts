@@ -40,6 +40,9 @@ export const batchTransfersTool = tool({
     }
     
     const freeTransfers = myTeam.transfers.limit - myTeam.transfers.made;
+    if (useWildcard && !myTeam.chips.some(chip => chip.name === 'wildcard' && chip.status_for_entry === 'available')) {
+      return { error: 'Wildcard is not available for this gameweek.' };
+    }
     let bank = myTeam.transfers.bank;
     
     // Build current squad state
@@ -64,6 +67,7 @@ export const batchTransfersTool = tool({
       inPlayer: ReturnType<typeof engine.getPlayer>;
       xpGain: number;
       priceChange: number;
+      sellingPrice: number;
     }[] = [];
     
     const errors: string[] = [];
@@ -121,7 +125,8 @@ export const batchTransfersTool = tool({
       }
       
       // Check budget
-      const priceChange = (sellingPrices.get(outPlayer.id) ?? outPlayer.now_cost) - inPlayer.now_cost;
+      const sellingPrice = sellingPrices.get(outPlayer.id) ?? outPlayer.now_cost;
+      const priceChange = sellingPrice - inPlayer.now_cost;
       if (bank + priceChange < 0) {
         errors.push(`Transfer ${i + 1}: Insufficient funds to buy ${inPlayer.web_name}`);
         continue;
@@ -156,6 +161,7 @@ export const batchTransfersTool = tool({
         inPlayer,
         xpGain,
         priceChange,
+        sellingPrice,
       });
     }
     
@@ -211,8 +217,21 @@ export const batchTransfersTool = tool({
       };
     }
     
-    // Execute transfers (in reality, FPL requires specific API calls)
-    const currentGW = engine.getCurrentGameweek();
+    const currentGW = engine.getNextDeadline()?.gameweek ?? engine.getCurrentGameweek();
+    const result = await client.makeTransfers(
+      validatedTransfers.map(transfer => ({
+        playerOut: transfer.outPlayer!.id,
+        playerIn: transfer.inPlayer!.id,
+        purchasePrice: transfer.inPlayer!.now_cost,
+        sellingPrice: transfer.sellingPrice,
+      })),
+      currentGW,
+      useWildcard ? 'wildcard' : undefined
+    );
+
+    if (!result.success) {
+      return { status: 'FAILED', message: result.message, ...analysis };
+    }
     
     // Log the batch decision
     await logDecision({
@@ -233,10 +252,9 @@ export const batchTransfersTool = tool({
     });
     
     return {
-      status: 'MANUAL_REQUIRED',
-      message: `${validatedTransfers.length} transfers analyzed and logged. They were not executed automatically; execute them on the FPL website to confirm.`,
+      status: 'EXECUTED',
+      message: `${validatedTransfers.length} transfers executed successfully.`,
       ...analysis,
-      note: 'Automatic batch transfer execution requires a verified FPL transfer payload and is disabled for safety.',
     };
   },
 });

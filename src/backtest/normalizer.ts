@@ -17,6 +17,13 @@ const GW_COLUMNS = ['element', 'name', 'position', 'team', 'value', 'xP', 'minut
 const FIXTURE_COLUMNS = ['id', 'event', 'kickoff_time', 'team_h', 'team_a', 'team_h_difficulty', 'team_a_difficulty'];
 const XP_COLUMNS = ['xP'];
 
+interface EventMetadata {
+  id: number;
+  deadline_time: string;
+  average_entry_score: number;
+  highest_score: number;
+}
+
 const POSITION_BY_NAME: Record<string, number> = {
   GK: 1,
   DEF: 2,
@@ -38,16 +45,16 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
   const teamsByName = buildTeamsByName(teamRows);
   const fixturesByGameweek = groupFixturesByGameweek(fixtureRows);
   const lastKnownPlayerRows = new Map<number, CsvRow>();
+  const eventMetadata = await readEventMetadata(join(options.cacheDir, 'season-bootstrap.json'));
   const snapshots: GameweekSnapshot[] = [];
 
   for (const gameweek of options.gameweeks) {
     const gwFileName = `gw-raw-${gameweek}.csv`;
     const gwRows = await readRequiredCsv(join(options.cacheDir, gwFileName), gwFileName, GW_COLUMNS);
     const xpFileName = `xp-raw-${gameweek}.csv`;
-    const xpRows = await readOptionalCsv(join(options.cacheDir, xpFileName), xpFileName, XP_COLUMNS);
+    const xpRows = await readOptionalXpCsv(join(options.cacheDir, xpFileName), xpFileName);
     const xpByElement = buildXpByElement(xpRows, xpFileName);
     const fixtures = fixturesByGameweek.get(gameweek) ?? [];
-
     if (fixtures.length === 0) throw new Error(`Missing fixture rows for GW${gameweek}`);
 
     const snapshot = buildSnapshot({
@@ -58,6 +65,7 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
       teamsByName,
       xpByElement,
       lastKnownPlayerRows,
+      eventMetadata: eventMetadata.get(gameweek),
     });
     const validation = validateSnapshot(snapshot);
     if (!validation.valid) throw new Error(`Invalid snapshot for GW${gameweek}: ${validation.errors.join('; ')}`);
@@ -69,6 +77,16 @@ export async function normalizeVaastavSnapshots(options: NormalizeVaastavSnapsho
     const temp = join(options.cacheDir, `gw-${snapshot.gameweek}.json.tmp`);
     await writeFile(temp, `${JSON.stringify(snapshot, null, 2)}\n`);
     await rename(temp, target);
+  }
+}
+
+async function readEventMetadata(path: string): Promise<Map<number, EventMetadata>> {
+  try {
+    const parsed = JSON.parse(await readFile(path, 'utf8')) as { events?: EventMetadata[] };
+    return new Map((parsed.events ?? []).map(event => [event.id, event]));
+  } catch (error) {
+    if (isNotFoundError(error)) return new Map();
+    throw error;
   }
 }
 
@@ -91,6 +109,17 @@ async function readOptionalCsv(path: string, label: string, requiredColumns: str
   try {
     const text = await readFile(path, 'utf8');
     return parseAndRequireColumns(text, label, requiredColumns);
+  } catch (error) {
+    if (isNotFoundError(error)) return [];
+    throw error;
+  }
+}
+
+async function readOptionalXpCsv(path: string, label: string): Promise<CsvRow[]> {
+  try {
+    const text = await readFile(path, 'utf8');
+    const normalized = text.split(/\r?\n/).filter(line => line.trim() !== '').join('\n');
+    return parseAndRequireColumns(normalized, label, XP_COLUMNS);
   } catch (error) {
     if (isNotFoundError(error)) return [];
     throw error;
@@ -143,6 +172,7 @@ function buildSnapshot(input: {
   teamsByName: Map<string, number>;
   xpByElement: Map<number, number>;
   lastKnownPlayerRows: Map<number, CsvRow>;
+  eventMetadata?: EventMetadata;
 }): GameweekSnapshot {
   const players: BacktestPlayer[] = [];
   const playerResults: PlayerGameweekResult[] = [];
@@ -187,22 +217,26 @@ function buildSnapshot(input: {
   return {
     season: input.options.season,
     gameweek: input.gameweek,
-    deadline: earliestIsoTime(kickoffTimes),
+    deadline: input.eventMetadata?.deadline_time ?? earliestIsoTime(kickoffTimes),
     knownBeforeDeadline: {
       players,
       fixtures: input.fixtures,
-      unavailableFields: UNAVAILABLE_FIELDS,
+      unavailableFields: input.eventMetadata
+        ? UNAVAILABLE_FIELDS.filter(field => !field.includes('deadline') && !field.includes('default scores'))
+        : UNAVAILABLE_FIELDS,
     },
     actualResults: {
       playerResults,
-      averageEntryScore: 0,
-      highestScore: 0,
+      averageEntryScore: input.eventMetadata?.average_entry_score ?? 0,
+      highestScore: input.eventMetadata?.highest_score ?? 0,
     },
     provenance: {
       sourceUrls: input.options.sourceUrls,
       downloadedAt: input.options.downloadedAt,
       snapshotVersion: input.options.snapshotVersion,
-      knownLimitations: UNAVAILABLE_FIELDS,
+      knownLimitations: input.eventMetadata
+        ? UNAVAILABLE_FIELDS.filter(field => !field.includes('deadline') && !field.includes('default scores'))
+        : UNAVAILABLE_FIELDS,
     },
   };
 }

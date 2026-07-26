@@ -30,8 +30,20 @@ AI-powered Fantasy Premier League assistant with game theory optimization.
 
 4. Run the agent:
    ```bash
-   npm run dev
-   ```
+    npm run dev
+    ```
+
+## Autonomous Mode
+
+Run the deadline-aware worker with:
+
+```bash
+npm run auto
+```
+
+The worker automatically optimizes the legal starting XI, bench order, captain, and vice-captain. Set `AUTO_EXECUTE_TRANSFERS=true` to permit single or multi-transfer execution and `AUTO_PLAY_CHIPS=true` to permit high-confidence Bench Boost and Triple Captain activation. `EMERGENCY_STOP=true` immediately blocks mutations.
+
+Autonomous mode also stores point-in-time player and fixture changes, takes periodic pre-deadline forecast snapshots, and reconciles predictions with actual points after each finished gameweek.
 
 ## Usage
 

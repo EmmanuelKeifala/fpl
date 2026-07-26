@@ -103,6 +103,7 @@ export interface ManagerState {
 export interface StrategyContext {
   state: ManagerState;
   snapshot: DecisionSnapshotInput;
+  revealedResults?: { gameweek: number; playerResults: PlayerGameweekResult[] }[];
 }
 
 export type BacktestStrategy = (context: StrategyContext) => BacktestDecision | Promise<BacktestDecision>;

@@ -2,6 +2,7 @@
 import { getFPLClient } from '../api/client.js';
 import type { Player, Fixture, Team, Gameweek } from '../api/types.js';
 import { projectPlayerPoints } from '../strategy/projections.js';
+import { getForecastAccuracy, getRollingPlayerProfiles, type RollingPlayerProfile } from '../db/client.js';
 
 export interface ExpectedPoints {
   playerId: number;
@@ -15,6 +16,9 @@ export interface ExpectedPoints {
     formFactor: number;
     fixtureFactor: number;
     minutesFactor: number;
+    expectedMinutes: number;
+    rateReliability: number;
+    calibrationAdjustment: number;
     setpieceFactor: number;
     defensiveContribution: number;
   };
@@ -64,6 +68,8 @@ class OptimizationEngine {
   private fixtures: Fixture[] = [];
   private gameweeks: Gameweek[] = [];
   private currentGW: number = 1;
+  private rollingProfiles = new Map<number, RollingPlayerProfile>();
+  private calibrationBias = 0;
 
   async initialize(): Promise<void> {
     const client = getFPLClient();
@@ -79,6 +85,14 @@ class OptimizationEngine {
     // Get current gameweek
     const currentEvent = bootstrap.events.find(e => e.is_current);
     this.currentGW = currentEvent?.id || 1;
+
+    const targetGameweek = bootstrap.events.find(event => new Date(event.deadline_time) > new Date())?.id ?? this.currentGW;
+    this.rollingProfiles = await getRollingPlayerProfiles(targetGameweek);
+    const calibration = await getForecastAccuracy();
+    if (calibration.samples >= 100) {
+      const calibrationReliability = Math.min(1, calibration.samples / 1000);
+      this.calibrationBias = Math.max(-1, Math.min(1, calibration.bias)) * calibrationReliability;
+    }
     
     // Get all fixtures
     this.fixtures = await client.getFixtures();
@@ -101,8 +115,20 @@ class OptimizationEngine {
     const form = parseFloat(player.form) || 0;
     const formFactor = Math.max(0.5, Math.min(1.5, 0.8 + (form / 10)));
     
-    // Minutes factor (0 to 1 based on recent starts)
-    const minutesFactor = Math.min(1, player.minutes / (this.currentGW * 90 * 0.9));
+    const completedGameweeks = Math.max(0, this.gameweeks.filter(gameweek => gameweek.finished).length);
+    const observedMinutes = completedGameweeks > 0 ? player.minutes / completedGameweeks : 0;
+    const minutesReliability = Math.min(1, completedGameweeks / 6);
+    const positionMinutesPrior = player.element_type === 1 ? 72 : 65;
+    const seasonExpectedMinutes = Math.max(0, Math.min(90,
+      observedMinutes * minutesReliability + positionMinutesPrior * (1 - minutesReliability)
+    ));
+    const rollingProfile = this.rollingProfiles.get(player.id);
+    const rollingWeight = (rollingProfile?.reliability ?? 0) * 0.65;
+    const expectedMinutes = Math.max(0, Math.min(90,
+      seasonExpectedMinutes * (1 - rollingWeight) + (rollingProfile?.minutesPerEvent ?? seasonExpectedMinutes) * rollingWeight
+    ));
+    const minutesFactor = expectedMinutes / 90;
+    const rateReliability = Math.min(1, player.minutes / 900);
     
     // Set piece factor (bonus for set piece takers)
     let setpieceFactor = 1.0;
@@ -115,50 +141,108 @@ class OptimizationEngine {
     if (upcomingFixtures.length > 0) {
       const fdrSum = upcomingFixtures.reduce((sum, f) => {
         const isHome = f.team_h === player.team;
-        const fdr = isHome ? f.team_a_difficulty : f.team_h_difficulty;
+        const fdr = isHome ? f.team_h_difficulty : f.team_a_difficulty;
         return sum + (FDR_WEIGHTS[fdr] || 1.0);
       }, 0);
       fixtureFactor = fdrSum / upcomingFixtures.length;
     }
     
     const nextFixtures = this.getUpcomingFixtures(player.team, 1);
-    const expectedMinutes = Math.min(90, player.minutes / Math.max(1, this.currentGW));
     const appearanceProbability = player.status === 'a'
       ? ((player.chance_of_playing_next_round ?? 100) / 100)
       : ((player.chance_of_playing_next_round ?? 0) / 100);
+    const goalRatePrior = [0, 0.01, 0.05, 0.22, 0.35][player.element_type] ?? 0.15;
+    const assistRatePrior = [0, 0.01, 0.08, 0.18, 0.12][player.element_type] ?? 0.1;
+    const seasonGoalsPer90 = (player.expected_goals_per_90 || 0) * rateReliability + goalRatePrior * (1 - rateReliability);
+    const seasonAssistsPer90 = (player.expected_assists_per_90 || 0) * rateReliability + assistRatePrior * (1 - rateReliability);
+    const rollingRateWeight = (rollingProfile?.reliability ?? 0) * 0.6;
+    const expectedGoalsPer90 = seasonGoalsPer90 * (1 - rollingRateWeight) +
+      (rollingProfile?.expectedGoalsPer90 ?? seasonGoalsPer90) * rollingRateWeight;
+    const expectedAssistsPer90 = seasonAssistsPer90 * (1 - rollingRateWeight) +
+      (rollingProfile?.expectedAssistsPer90 ?? seasonAssistsPer90) * rollingRateWeight;
+    const playedNineties = Math.max(0.1, player.minutes / 90);
+    const expectedSavesPer90 = player.element_type === 1
+      ? (player.saves_per_90 || 0) * rateReliability + 3 * (1 - rateReliability)
+      : 0;
+    const yellowCardProbability = Math.min(0.35, ((player.yellow_cards || 0) / playedNineties) * rateReliability + 0.1 * (1 - rateReliability));
+    const redCardProbability = Math.min(0.08, ((player.red_cards || 0) / playedNineties) * rateReliability + 0.01 * (1 - rateReliability));
+    const ownGoalProbability = Math.min(0.05, ((player.own_goals || 0) / playedNineties) * rateReliability + 0.003 * (1 - rateReliability));
+    const expectedBonus = Math.min(1.5, ((player.bonus || 0) / playedNineties) * rateReliability + 0.25 * (1 - rateReliability));
+    const averageAttackHome = this.averageTeamStrength('strength_attack_home');
+    const averageAttackAway = this.averageTeamStrength('strength_attack_away');
+    const averageDefenceHome = this.averageTeamStrength('strength_defence_home');
+    const averageDefenceAway = this.averageTeamStrength('strength_defence_away');
+    const fixtureInputs = (fixturesForProjection: Fixture[]) => fixturesForProjection.map(fixture => {
+      const isHome = fixture.team_h === player.team;
+      const opponent = this.teams.get(isHome ? fixture.team_a : fixture.team_h);
+      const ownAttack = team?.[isHome ? 'strength_attack_home' : 'strength_attack_away'] || (isHome ? averageAttackHome : averageAttackAway);
+      const opponentDefence = opponent?.[isHome ? 'strength_defence_away' : 'strength_defence_home'] || (isHome ? averageDefenceAway : averageDefenceHome);
+      const attackAverage = isHome ? averageAttackHome : averageAttackAway;
+      const defenceAverage = isHome ? averageDefenceAway : averageDefenceHome;
+      const strengthMultiplier = (ownAttack / attackAverage) * (defenceAverage / opponentDefence);
+      const fdrMultiplier = FDR_WEIGHTS[this.getNextFDR(fixture, player.team)] || 1;
+      const attackMultiplier = Math.max(0.55, Math.min(1.6, strengthMultiplier * 0.8 + fdrMultiplier * 0.2));
+
+      const opponentAttack = opponent?.[isHome ? 'strength_attack_away' : 'strength_attack_home'] || (isHome ? averageAttackAway : averageAttackHome);
+      const ownDefence = team?.[isHome ? 'strength_defence_home' : 'strength_defence_away'] || (isHome ? averageDefenceHome : averageDefenceAway);
+      const opponentAttackAverage = isHome ? averageAttackAway : averageAttackHome;
+      const ownDefenceAverage = isHome ? averageDefenceHome : averageDefenceAway;
+      const strengthExpectedGoalsConceded = Math.max(0.35, Math.min(3.2,
+        1.35 * (opponentAttack / opponentAttackAverage) * (ownDefenceAverage / ownDefence)
+      ));
+      const defensiveRollingWeight = (rollingProfile?.reliability ?? 0) * 0.25;
+      const expectedGoalsConceded = strengthExpectedGoalsConceded * (1 - defensiveRollingWeight) +
+        (rollingProfile?.expectedGoalsConcededPer90 ?? strengthExpectedGoalsConceded) * defensiveRollingWeight;
+
+      return {
+        difficulty: this.getNextFDR(fixture, player.team),
+        attackMultiplier,
+        cleanSheetProbability: Math.exp(-expectedGoalsConceded),
+        expectedGoalsConceded,
+      };
+    });
     const toProjectionInput = (fixturesForProjection: Fixture[]) => ({
       elementType: player.element_type,
       expectedMinutes,
       appearanceProbability,
-      expectedGoals: (player.expected_goals_per_90 || 0) * setpieceFactor,
-      expectedAssists: (player.expected_assists_per_90 || 0) * setpieceFactor,
-      cleanSheetProbability: player.element_type <= 3 ? Math.max(0, Math.min(1, 0.45 * fixtureFactor)) : 0,
-      expectedSaves: player.element_type === 1 ? (player.saves_per_90 || 0) : 0,
-      penaltySaveProbability: player.element_type === 1 ? 0.02 : 0,
-      penaltyMissProbability: 0.01,
-      yellowCardProbability: 0.12,
-      redCardProbability: 0.01,
-      ownGoalProbability: 0.005,
+      expectedGoals: expectedGoalsPer90 * setpieceFactor,
+      expectedAssists: expectedAssistsPer90 * setpieceFactor,
+      cleanSheetProbability: 0,
+      expectedSaves: expectedSavesPer90,
+      penaltySaveProbability: player.element_type === 1
+        ? Math.min(0.12, ((player.penalties_saved || 0) / playedNineties) * rateReliability + 0.02 * (1 - rateReliability))
+        : 0,
+      penaltyMissProbability: Math.min(0.08, ((player.penalties_missed || 0) / playedNineties) * rateReliability + 0.005 * (1 - rateReliability)),
+      yellowCardProbability,
+      redCardProbability,
+      ownGoalProbability,
       expectedGoalsConceded: player.expected_goals_conceded_per_90 || player.goals_conceded_per_90 || 1,
       defensiveContributionProbability: player.element_type === 1 ? 0 : Math.min(0.8, 0.2 + minutesFactor * 0.3),
-      expectedBonus: Math.max(0, Math.min(1.5, form / 6)),
-      fixtures: fixturesForProjection.map(f => ({ difficulty: this.getNextFDR(f, player.team) })),
+      expectedBonus,
+      rateReliability,
+      fixtures: fixtureInputs(fixturesForProjection),
     });
     const projection = projectPlayerPoints(toProjectionInput(upcomingFixtures));
     const nextProjection = projectPlayerPoints(toProjectionInput(nextFixtures));
+    const calibrationAdjustment = -this.calibrationBias;
+    const nextCalibrationAdjustment = nextFixtures.length > 0 ? calibrationAdjustment : 0;
+    const projectedGameweeks = new Set(upcomingFixtures.map(fixture => fixture.event)).size;
     
     return {
       playerId: player.id,
       playerName: player.web_name,
       team: team?.short_name || 'UNK',
       position: positionName,
-      nextGW: nextProjection.expectedPoints,
-      next5GW: projection.expectedPoints,
+      nextGW: Math.max(0, Math.round((nextProjection.expectedPoints + nextCalibrationAdjustment) * 10) / 10),
+      next5GW: Math.max(0, Math.round((projection.expectedPoints + calibrationAdjustment * projectedGameweeks) * 10) / 10),
       confidence: projection.confidence,
       breakdown: {
         formFactor: Math.round(formFactor * 100) / 100,
         fixtureFactor: Math.round(fixtureFactor * 100) / 100,
         minutesFactor: Math.round(minutesFactor * 100) / 100,
+        expectedMinutes: Math.round(expectedMinutes),
+        rateReliability: Math.round(rateReliability * 100) / 100,
+        calibrationAdjustment: Math.round(calibrationAdjustment * 100) / 100,
         setpieceFactor: Math.round(setpieceFactor * 100) / 100,
         defensiveContribution: projection.breakdown.defensiveContribution,
       },
@@ -324,11 +408,12 @@ class OptimizationEngine {
 
   // Helper methods
   getUpcomingFixtures(teamId: number, count: number): Fixture[] {
-    const maxEvent = this.currentGW + count - 1;
+    const startEvent = this.getNextDeadline()?.gameweek ?? this.currentGW;
+    const maxEvent = startEvent + count - 1;
     return this.fixtures
       .filter(f => 
         f.event !== null && 
-        f.event >= this.currentGW && 
+        f.event >= startEvent &&
         f.event <= maxEvent &&
         (f.team_h === teamId || f.team_a === teamId)
       )
@@ -337,7 +422,17 @@ class OptimizationEngine {
 
   private getNextFDR(fixture: Fixture, teamId: number): number {
     const isHome = fixture.team_h === teamId;
-    return isHome ? fixture.team_a_difficulty : fixture.team_h_difficulty;
+    return isHome ? fixture.team_h_difficulty : fixture.team_a_difficulty;
+  }
+
+  private averageTeamStrength(
+    field: 'strength_attack_home' | 'strength_attack_away' | 'strength_defence_home' | 'strength_defence_away'
+  ): number {
+    const strengths = Array.from(this.teams.values())
+      .map(team => team[field])
+      .filter((strength): strength is number => Number.isFinite(strength) && strength > 0);
+    if (strengths.length === 0) return 1000;
+    return strengths.reduce((sum, strength) => sum + strength, 0) / strengths.length;
   }
 
   private getPositionName(elementType: number): string {
@@ -378,6 +473,10 @@ class OptimizationEngine {
   // Get team by ID
   getTeam(id: number): Team | undefined {
     return this.teams.get(id);
+  }
+
+  getAllFixtures(): Fixture[] {
+    return [...this.fixtures];
   }
 
   // Get current gameweek

@@ -1,4 +1,4 @@
-import { unlink } from 'node:fs/promises';
+import { unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { BacktestDataSource, getDefaultBacktestCacheDir, type BacktestSourceDescriptor } from './data-source.js';
@@ -9,19 +9,29 @@ import type { BacktestStrategyName } from './report.js';
 import { FileSnapshotStore } from './snapshots.js';
 import { deterministicStrategy } from './strategies/baseline.js';
 import { createFairStrategy } from './strategies/fair.js';
+import { createAutonomousReplayStrategy } from './strategies/autonomous.js';
 import { createOracleStrategy } from './strategies/oracle.js';
 import { formatExperimentSummary, parseExperimentOptions, runExperimentMatrix } from './experiments/runner.js';
 
 export { deterministicStrategy } from './strategies/baseline.js';
 
-export interface RunOptions { strategy: BacktestStrategyName; season: string; }
+export interface RunOptions { strategy: BacktestStrategyName; season: string; top10kCutoff?: number; }
 
 export function parseRunOptions(args: string[]): RunOptions {
   const strategyArg = args.find(arg => arg.startsWith('--strategy='));
   const seasonArg = args.find(arg => arg.startsWith('--season='));
+  const top10kArg = args.find(arg => arg.startsWith('--top10k-cutoff='));
   const strategy = (strategyArg?.split('=')[1] ?? 'baseline') as BacktestStrategyName;
-  if (!['baseline', 'fair', 'oracle'].includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
-  return { strategy, season: parseSeason(seasonArg?.split('=')[1] ?? DEFAULT_SEASON) };
+  if (!['baseline', 'fair', 'autonomous', 'oracle'].includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
+  const top10kCutoff = top10kArg ? Number(top10kArg.split('=')[1]) : undefined;
+  if (top10kCutoff !== undefined && (!Number.isInteger(top10kCutoff) || top10kCutoff <= 0)) {
+    throw new Error('Top-10k cutoff must be a positive integer');
+  }
+  return {
+    strategy,
+    season: parseSeason(seasonArg?.split('=')[1] ?? DEFAULT_SEASON),
+    ...(top10kCutoff !== undefined ? { top10kCutoff } : {}),
+  };
 }
 
 export type TopLevelCommand = 'prepare-data' | 'run-season' | 'run-experiment';
@@ -59,12 +69,17 @@ function getVaastavSources(season: string): { sourceUrls: string[]; sourceDescri
   const vaastavSeason = toVaastavSeasonPath(season);
   const base = `https://raw.githubusercontent.com/vaastav/Fantasy-Premier-League/master/data/${vaastavSeason}`;
   const listing = `https://api.github.com/repos/vaastav/Fantasy-Premier-League/contents/data/${vaastavSeason}?ref=master`;
+  const archivedBootstrap = {
+    '2024-2025': 'https://web.archive.org/web/20250625000001id_/https://fantasy.premierleague.com/api/bootstrap-static/',
+    '2025-2026': 'https://web.archive.org/web/20260624000027id_/https://fantasy.premierleague.com/api/bootstrap-static/',
+  }[season];
   const sourceUrls = [
     listing,
     `${base}/fixtures.csv`,
     `${base}/teams.csv`,
     ...Array.from({ length: 38 }, (_, index) => `${base}/gws/gw${index + 1}.csv`),
     ...Array.from({ length: 38 }, (_, index) => `${base}/gws/xP${index + 1}.csv`),
+    ...(archivedBootstrap ? [archivedBootstrap] : []),
   ];
 
   return {
@@ -73,6 +88,9 @@ function getVaastavSources(season: string): { sourceUrls: string[]; sourceDescri
       { url: sourceUrls[0], fileName: 'source-listing.json', format: 'json' },
       { url: `${base}/fixtures.csv`, fileName: 'fixtures.csv', format: 'text' },
       { url: `${base}/teams.csv`, fileName: 'teams.csv', format: 'text' },
+      ...(archivedBootstrap
+        ? [{ url: archivedBootstrap, fileName: 'season-bootstrap.json', format: 'json' as const }]
+        : []),
       ...Array.from({ length: 38 }, (_, index) => ({
         url: `${base}/gws/gw${index + 1}.csv`,
         fileName: `gw-raw-${index + 1}.csv`,
@@ -142,12 +160,12 @@ async function removeManifest(preparedCacheDir: string): Promise<void> {
 export async function runSeason(options: RunOptions = { strategy: 'baseline', season: DEFAULT_SEASON }): Promise<void> {
   const season = parseSeason(options.season);
   const store = new FileSnapshotStore(cacheDir(season));
-  const firstSnapshot = await store.getSnapshot(1);
-  const snapshots = options.strategy === 'oracle'
-    ? await Promise.all(Array.from({ length: 38 }, (_, index) => store.getSnapshot(index + 1)))
-    : [];
+  const snapshots = await Promise.all(Array.from({ length: 38 }, (_, index) => store.getSnapshot(index + 1)));
+  const firstSnapshot = snapshots[0]!;
   const strategy = options.strategy === 'fair'
     ? createFairStrategy()
+    : options.strategy === 'autonomous'
+      ? createAutonomousReplayStrategy()
     : options.strategy === 'oracle'
       ? createOracleStrategy(snapshots)
       : deterministicStrategy();
@@ -158,8 +176,25 @@ export async function runSeason(options: RunOptions = { strategy: 'baseline', se
     strategy,
   });
   const state = await engine.run();
-  const report = buildBacktestReport(state, firstSnapshot.provenance, options.strategy);
+  const report = buildBacktestReport(state, firstSnapshot.provenance, options.strategy, snapshots, options.top10kCutoff);
+  const reportPath = join(cacheDir(season), `report-${options.strategy}.json`);
+  const weeklyPath = join(cacheDir(season), `report-${options.strategy}-weekly.csv`);
+  await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
+  await writeFile(weeklyPath, [
+    'gameweek,points,average,difference,cumulative_points,cumulative_average,cumulative_difference',
+    ...report.weeklyBenchmark.map(row => [
+      row.gameweek,
+      row.points,
+      row.averageEntryScore,
+      row.difference,
+      row.cumulativePoints,
+      row.cumulativeAverage,
+      row.cumulativeDifference,
+    ].join(',')),
+  ].join('\n') + '\n');
   console.log(formatBacktestSummary(report));
+  console.log(`Report: ${reportPath}`);
+  console.log(`Weekly CSV: ${weeklyPath}`);
   console.log(JSON.stringify(report, null, 2));
 }
 

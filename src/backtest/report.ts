@@ -1,7 +1,7 @@
 import type { ChipName } from '../strategy/rules.js';
-import type { ManagerState, SnapshotProvenance, WeeklyResult } from './types.js';
+import type { GameweekSnapshot, ManagerState, SnapshotProvenance, WeeklyResult } from './types.js';
 
-export type BacktestStrategyName = 'baseline' | 'fair' | 'oracle';
+export type BacktestStrategyName = 'baseline' | 'fair' | 'autonomous' | 'oracle';
 
 export interface TransferReportRow {
   gameweek: number;
@@ -22,7 +22,16 @@ export interface BacktestReport {
   captainPointsTotal: number;
   benchPointsTotal: number;
   estimatedRankPercentile: number | null;
+  top10kCutoff: number | null;
+  pointsVsTop10k: number | null;
+  metTop10kBenchmark: boolean | null;
   weekly: WeeklyResult[];
+  weeklyBenchmark: WeeklyBenchmarkRow[];
+  averageTotal: number;
+  pointsAboveAverage: number;
+  gameweeksAboveAverage: number;
+  gameweeksLevelWithAverage: number;
+  gameweeksBelowAverage: number;
   transfers: TransferReportRow[];
   chips: ChipReportRow[];
   finalSquad: number[];
@@ -31,10 +40,22 @@ export interface BacktestReport {
   provenance: SnapshotProvenance;
 }
 
+export interface WeeklyBenchmarkRow {
+  gameweek: number;
+  points: number;
+  averageEntryScore: number;
+  difference: number;
+  cumulativePoints: number;
+  cumulativeAverage: number;
+  cumulativeDifference: number;
+}
+
 export function buildBacktestReport(
   state: ManagerState,
   provenance: SnapshotProvenance,
   strategy: BacktestStrategyName = 'baseline',
+  snapshots: GameweekSnapshot[] = [],
+  top10kCutoff?: number,
 ): BacktestReport {
   const transfers = state.decisions.flatMap(decision => decision.transfers.map(transfer => ({
     gameweek: decision.gameweek,
@@ -48,6 +69,23 @@ export function buildBacktestReport(
   const finalSquadValue = lastWeek?.chip === 'freehit'
     ? state.squad.reduce((total, pick) => total + pick.sellingPrice, state.bank)
     : lastWeek?.squadValue ?? state.bank;
+  const snapshotsByGameweek = new Map(snapshots.map(snapshot => [snapshot.gameweek, snapshot]));
+  let cumulativePoints = 0;
+  let cumulativeAverage = 0;
+  const weeklyBenchmark = state.weeklyResults.map(result => {
+    const averageEntryScore = snapshotsByGameweek.get(result.gameweek)?.actualResults.averageEntryScore ?? 0;
+    cumulativePoints += result.points;
+    cumulativeAverage += averageEntryScore;
+    return {
+      gameweek: result.gameweek,
+      points: result.points,
+      averageEntryScore,
+      difference: result.points - averageEntryScore,
+      cumulativePoints,
+      cumulativeAverage,
+      cumulativeDifference: cumulativePoints - cumulativeAverage,
+    };
+  });
 
   return {
     strategy,
@@ -56,7 +94,16 @@ export function buildBacktestReport(
     captainPointsTotal: state.weeklyResults.reduce((total, result) => total + result.captainPoints, 0),
     benchPointsTotal: state.weeklyResults.reduce((total, result) => total + result.benchPoints, 0),
     estimatedRankPercentile: null,
+    top10kCutoff: top10kCutoff ?? null,
+    pointsVsTop10k: top10kCutoff === undefined ? null : state.totalPoints - top10kCutoff,
+    metTop10kBenchmark: top10kCutoff === undefined ? null : state.totalPoints >= top10kCutoff,
     weekly: state.weeklyResults,
+    weeklyBenchmark,
+    averageTotal: cumulativeAverage,
+    pointsAboveAverage: cumulativePoints - cumulativeAverage,
+    gameweeksAboveAverage: weeklyBenchmark.filter(row => row.difference > 0).length,
+    gameweeksLevelWithAverage: weeklyBenchmark.filter(row => row.difference === 0).length,
+    gameweeksBelowAverage: weeklyBenchmark.filter(row => row.difference < 0).length,
     transfers,
     chips,
     finalSquad: state.squad.map(pick => pick.playerId),
@@ -74,7 +121,12 @@ export function formatBacktestSummary(report: BacktestReport): string {
     `Season: ${report.season}`,
     `Strategy: ${report.strategy}`,
     `Total points: ${report.totalPoints}`,
+    `FPL average total: ${report.averageTotal}`,
+    `Points vs average: ${report.pointsAboveAverage >= 0 ? '+' : ''}${report.pointsAboveAverage}`,
+    `GW record vs average: ${report.gameweeksAboveAverage}W-${report.gameweeksLevelWithAverage}D-${report.gameweeksBelowAverage}L`,
     `Estimated rank percentile: ${rank}`,
+    `Top-10k cutoff: ${report.top10kCutoff ?? 'unavailable'}`,
+    `Points vs top 10k: ${report.pointsVsTop10k === null ? 'unavailable' : `${report.pointsVsTop10k >= 0 ? '+' : ''}${report.pointsVsTop10k}`}`,
     `Gameweeks replayed: ${report.weekly.length}`,
     `Transfers made: ${report.transfers.length}`,
     `Chips played: ${report.chips.length}`,

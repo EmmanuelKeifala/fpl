@@ -10,6 +10,7 @@ import type {
   LiveGameweek,
   ClassicLeagueStandings,
   FPLSession,
+  Pick,
 } from './types.js';
 
 const FPL_BASE_URL = 'https://fantasy.premierleague.com/api';
@@ -19,6 +20,20 @@ interface FetchOptions {
   method?: 'GET' | 'POST';
   body?: Record<string, unknown>;
   requiresAuth?: boolean;
+}
+
+export interface TransferRequest {
+  playerOut: number;
+  playerIn: number;
+  purchasePrice: number;
+  sellingPrice: number;
+}
+
+export interface TeamSelection {
+  element: number;
+  position: number;
+  isCaptain: boolean;
+  isViceCaptain: boolean;
 }
 
 class FPLClient {
@@ -144,6 +159,7 @@ class FPLClient {
       method: options.method || 'GET',
       headers,
       body: options.body ? JSON.stringify(options.body) : undefined,
+      signal: AbortSignal.timeout(15_000),
     });
 
     if (!response.ok) {
@@ -221,8 +237,23 @@ class FPLClient {
     purchasePrice: number,
     sellingPrice: number
   ): Promise<{ success: boolean; message: string }> {
+    return this.makeTransfers(
+      [{ playerOut, playerIn, purchasePrice, sellingPrice }],
+      gameweek
+    );
+  }
+
+  async makeTransfers(
+    transfers: TransferRequest[],
+    gameweek: number,
+    chip?: 'wildcard' | 'freehit'
+  ): Promise<{ success: boolean; message: string }> {
     if (!this.managerId) {
       throw new Error('Manager ID required');
+    }
+
+    if (transfers.length === 0) {
+      return { success: false, message: 'At least one transfer is required' };
     }
 
     try {
@@ -233,16 +264,14 @@ class FPLClient {
           confirmed: true,
           entry: this.managerId,
           event: gameweek,
-          transfers: [
-            {
-              element_in: playerIn,
-              element_out: playerOut,
-              purchase_price: purchasePrice,
-              selling_price: sellingPrice,
-            },
-          ],
-          wildcard: false,
-          freehit: false,
+          transfers: transfers.map(transfer => ({
+            element_in: transfer.playerIn,
+            element_out: transfer.playerOut,
+            purchase_price: transfer.purchasePrice,
+            selling_price: transfer.sellingPrice,
+          })),
+          wildcard: chip === 'wildcard',
+          freehit: chip === 'freehit',
         },
       });
       return { success: true, message: 'Transfer completed successfully' };
@@ -251,18 +280,57 @@ class FPLClient {
     }
   }
 
+  async updateTeam(
+    selection: TeamSelection[],
+    chip: 'bboost' | '3xc' | null = null
+  ): Promise<{ success: boolean; message: string }> {
+    if (!this.managerId) throw new Error('Manager ID required');
+    if (selection.length !== 15) {
+      return { success: false, message: 'Team selection must contain exactly 15 players' };
+    }
+
+    try {
+      await this.fetch(`/my-team/${this.managerId}/`, {
+        method: 'POST',
+        requiresAuth: true,
+        body: {
+          chip,
+          picks: selection.map(pick => ({
+            element: pick.element,
+            position: pick.position,
+            is_captain: pick.isCaptain,
+            is_vice_captain: pick.isViceCaptain,
+          })),
+        },
+      });
+      return { success: true, message: chip ? `Team updated with ${chip}` : 'Team updated successfully' };
+    } catch (error) {
+      return { success: false, message: error instanceof Error ? error.message : 'Team update failed' };
+    }
+  }
+
   async playChip(
     chipName: 'wildcard' | 'freehit' | 'bboost' | '3xc',
-    gameweek: number
+    gameweek: number,
+    picks?: Pick[]
   ): Promise<{ success: boolean; message: string }> {
     if (!this.managerId) {
       throw new Error('Manager ID required');
     }
 
-    return {
-      success: false,
-      message: `Automatic ${chipName} activation for GW${gameweek} is not implemented safely. Activate the chip manually on the FPL website.`,
-    };
+    if ((chipName === 'bboost' || chipName === '3xc') && picks) {
+      return this.updateTeam(
+        picks.map(pick => ({
+          element: pick.element,
+          position: pick.position,
+          isCaptain: pick.is_captain,
+          isViceCaptain: pick.is_vice_captain,
+        })),
+        chipName
+      );
+    }
+
+    return { success: false, message: `${chipName} requires a complete transfer plan for GW${gameweek}` };
   }
 
   // Helper Methods

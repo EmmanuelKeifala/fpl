@@ -4,6 +4,8 @@ import type { Decision, NewDecision, GameweekSnapshot, NewGameweekSnapshot } fro
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import type { Fixture, Player } from '../api/types.js';
+import type { ExpectedPoints } from '../engine/optimizer.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -133,6 +135,41 @@ async function initDatabase(): Promise<SqlJsDatabase> {
   
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_decisions_gameweek ON decisions(gameweek)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_decisions_type ON decisions(decision_type)`);
+
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS player_observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gameweek INTEGER NOT NULL,
+      player_id INTEGER NOT NULL,
+      observed_at INTEGER NOT NULL,
+      state_json TEXT NOT NULL
+    )
+  `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS fixture_observations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gameweek INTEGER NOT NULL,
+      fixture_id INTEGER NOT NULL,
+      observed_at INTEGER NOT NULL,
+      state_json TEXT NOT NULL
+    )
+  `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS player_forecasts (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gameweek INTEGER NOT NULL,
+      player_id INTEGER NOT NULL,
+      horizon INTEGER NOT NULL,
+      predicted_points REAL NOT NULL,
+      confidence REAL NOT NULL,
+      expected_minutes REAL NOT NULL,
+      actual_points INTEGER,
+      captured_at INTEGER NOT NULL
+    )
+  `);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_observations_lookup ON player_observations(player_id, id)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_fixture_observations_lookup ON fixture_observations(fixture_id, id)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_forecasts_gameweek ON player_forecasts(gameweek, player_id, horizon)`);
   
   dbReady = true;
   saveDatabase();
@@ -272,6 +309,258 @@ export async function getRecentSnapshots(limit = 10): Promise<GameweekSnapshot[]
   return result[0].values.map((row: unknown[]) =>
     fromDbRow(result[0].columns, row, snapshotColumns) as unknown as GameweekSnapshot
   );
+}
+
+export async function saveIntelligenceObservations(
+  gameweek: number,
+  players: Player[],
+  fixtures: Fixture[],
+  observedAt: Date = new Date()
+): Promise<{ players: number; fixtures: number }> {
+  const db = await initDatabase();
+  const latestPlayerStates = latestStates(db, 'player_observations', 'player_id');
+  const latestFixtureStates = latestStates(db, 'fixture_observations', 'fixture_id');
+  let playerChanges = 0;
+  let fixtureChanges = 0;
+  db.run('BEGIN TRANSACTION');
+  try {
+    for (const player of players) {
+      const state = JSON.stringify({
+        team: player.team,
+        position: player.element_type,
+        price: player.now_cost,
+        status: player.status,
+        chance: player.chance_of_playing_next_round,
+        news: player.news,
+        minutes: player.minutes,
+        starts: player.starts,
+        form: player.form,
+        expectedGoals: player.expected_goals,
+        expectedAssists: player.expected_assists,
+        expectedGoalsConceded: player.expected_goals_conceded,
+        selectedByPercent: player.selected_by_percent,
+        transfersInEvent: player.transfers_in_event,
+        transfersOutEvent: player.transfers_out_event,
+      });
+      if (latestPlayerStates.get(player.id) === state) continue;
+      db.run(
+        'INSERT INTO player_observations (gameweek, player_id, observed_at, state_json) VALUES (?, ?, ?, ?)',
+        [gameweek, player.id, observedAt.getTime(), state]
+      );
+      playerChanges++;
+    }
+
+    for (const fixture of fixtures) {
+      const state = JSON.stringify({
+        event: fixture.event,
+        kickoffTime: fixture.kickoff_time,
+        started: fixture.started,
+        finished: fixture.finished,
+        homeTeam: fixture.team_h,
+        awayTeam: fixture.team_a,
+        homeDifficulty: fixture.team_h_difficulty,
+        awayDifficulty: fixture.team_a_difficulty,
+        homeScore: fixture.team_h_score,
+        awayScore: fixture.team_a_score,
+      });
+      if (latestFixtureStates.get(fixture.id) === state) continue;
+      db.run(
+        'INSERT INTO fixture_observations (gameweek, fixture_id, observed_at, state_json) VALUES (?, ?, ?, ?)',
+        [gameweek, fixture.id, observedAt.getTime(), state]
+      );
+      fixtureChanges++;
+    }
+    db.run('COMMIT');
+  } catch (error) {
+    db.run('ROLLBACK');
+    throw error;
+  }
+  if (playerChanges > 0 || fixtureChanges > 0) saveDatabase();
+  return { players: playerChanges, fixtures: fixtureChanges };
+}
+
+export async function saveForecastSnapshot(
+  gameweek: number,
+  horizon: number,
+  forecasts: ExpectedPoints[],
+  force: boolean = false,
+  capturedAt: Date = new Date()
+): Promise<number> {
+  const db = await initDatabase();
+  const intervalHours = force ? 1 : Math.max(1, parseInt(process.env.FORECAST_SNAPSHOT_HOURS || '6'));
+  const latest = db.exec(
+    'SELECT MAX(captured_at) FROM player_forecasts WHERE gameweek = ? AND horizon = ?',
+    [gameweek, horizon]
+  )[0]?.values[0]?.[0];
+  if (typeof latest === 'number' && capturedAt.getTime() - latest < intervalHours * 60 * 60 * 1000) return 0;
+
+  db.run('BEGIN TRANSACTION');
+  try {
+    for (const forecast of forecasts) {
+      db.run(
+        `INSERT INTO player_forecasts
+          (gameweek, player_id, horizon, predicted_points, confidence, expected_minutes, captured_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?)`,
+        [gameweek, forecast.playerId, horizon, forecast.nextGW, forecast.confidence, forecast.breakdown.expectedMinutes, capturedAt.getTime()]
+      );
+    }
+    db.run('COMMIT');
+  } catch (error) {
+    db.run('ROLLBACK');
+    throw error;
+  }
+  saveDatabase();
+  return forecasts.length;
+}
+
+export async function isForecastSnapshotDue(
+  gameweek: number,
+  horizon: number,
+  force: boolean = false,
+  now: Date = new Date()
+): Promise<boolean> {
+  const db = await initDatabase();
+  const intervalHours = force ? 1 : Math.max(1, parseInt(process.env.FORECAST_SNAPSHOT_HOURS || '6'));
+  const latest = db.exec(
+    'SELECT MAX(captured_at) FROM player_forecasts WHERE gameweek = ? AND horizon = ?',
+    [gameweek, horizon]
+  )[0]?.values[0]?.[0];
+  return typeof latest !== 'number' || now.getTime() - latest >= intervalHours * 60 * 60 * 1000;
+}
+
+export async function reconcileForecastOutcomes(gameweek: number, actualPoints: Map<number, number>): Promise<number> {
+  const db = await initDatabase();
+  let updated = 0;
+  db.run('BEGIN TRANSACTION');
+  try {
+    for (const [playerId, points] of actualPoints) {
+      db.run(
+        'UPDATE player_forecasts SET actual_points = ? WHERE gameweek = ? AND player_id = ? AND horizon = 1 AND actual_points IS NULL',
+        [points, gameweek, playerId]
+      );
+      updated++;
+    }
+    db.run('COMMIT');
+  } catch (error) {
+    db.run('ROLLBACK');
+    throw error;
+  }
+  saveDatabase();
+  return updated;
+}
+
+export async function getForecastAccuracy(gameweek?: number): Promise<{
+  samples: number;
+  meanAbsoluteError: number;
+  bias: number;
+  rootMeanSquaredError: number;
+}> {
+  const db = await initDatabase();
+  const where = gameweek === undefined ? '' : 'AND forecast.gameweek = ?';
+  const params = gameweek === undefined ? [] : [gameweek];
+  const result = db.exec(`
+    SELECT forecast.predicted_points, forecast.actual_points
+    FROM player_forecasts forecast
+    INNER JOIN (
+      SELECT gameweek, player_id, MAX(captured_at) AS latest_capture
+      FROM player_forecasts
+      WHERE horizon = 1
+      GROUP BY gameweek, player_id
+    ) latest
+      ON forecast.gameweek = latest.gameweek
+      AND forecast.player_id = latest.player_id
+      AND forecast.captured_at = latest.latest_capture
+    WHERE forecast.horizon = 1 AND forecast.actual_points IS NOT NULL ${where}
+  `, params);
+  const rows = result[0]?.values ?? [];
+  if (rows.length === 0) return { samples: 0, meanAbsoluteError: 0, bias: 0, rootMeanSquaredError: 0 };
+  const errors = rows.map(row => Number(row[0]) - Number(row[1]));
+  return {
+    samples: errors.length,
+    meanAbsoluteError: errors.reduce((sum, error) => sum + Math.abs(error), 0) / errors.length,
+    bias: errors.reduce((sum, error) => sum + error, 0) / errors.length,
+    rootMeanSquaredError: Math.sqrt(errors.reduce((sum, error) => sum + error * error, 0) / errors.length),
+  };
+}
+
+function latestStates(db: SqlJsDatabase, table: string, idColumn: string): Map<number, string> {
+  const result = db.exec(`
+    SELECT current.${idColumn}, current.state_json
+    FROM ${table} current
+    INNER JOIN (SELECT ${idColumn}, MAX(id) AS max_id FROM ${table} GROUP BY ${idColumn}) latest
+      ON current.id = latest.max_id
+  `);
+  if (!result[0]) return new Map();
+  return new Map(result[0].values.map(row => [Number(row[0]), String(row[1])]));
+}
+
+export interface RollingPlayerProfile {
+  playerId: number;
+  events: number;
+  minutes: number;
+  starts: number;
+  minutesPerEvent: number;
+  startRate: number;
+  expectedGoalsPer90: number;
+  expectedAssistsPer90: number;
+  expectedGoalsConcededPer90: number;
+  reliability: number;
+}
+
+export async function getRollingPlayerProfiles(
+  targetGameweek: number,
+  window: number = 6
+): Promise<Map<number, RollingPlayerProfile>> {
+  const db = await initDatabase();
+  const result = db.exec(`
+    SELECT observation.player_id, observation.gameweek, observation.state_json
+    FROM player_observations observation
+    INNER JOIN (
+      SELECT player_id, gameweek, MAX(id) AS max_id
+      FROM player_observations
+      WHERE gameweek <= ?
+      GROUP BY player_id, gameweek
+    ) latest ON observation.id = latest.max_id
+    ORDER BY observation.player_id, observation.gameweek DESC
+  `, [targetGameweek]);
+  const rows = result[0]?.values ?? [];
+  const histories = new Map<number, { gameweek: number; state: Record<string, unknown> }[]>();
+  for (const row of rows) {
+    const playerId = Number(row[0]);
+    const history = histories.get(playerId) ?? [];
+    if (history.length <= window) {
+      history.push({ gameweek: Number(row[1]), state: JSON.parse(String(row[2])) as Record<string, unknown> });
+      histories.set(playerId, history);
+    }
+  }
+
+  const profiles = new Map<number, RollingPlayerProfile>();
+  for (const [playerId, history] of histories) {
+    if (history.length < 2) continue;
+    const current = history[0]!;
+    const oldest = history[Math.min(window, history.length - 1)]!;
+    const events = current.gameweek - oldest.gameweek;
+    const minutes = Number(current.state.minutes) - Number(oldest.state.minutes);
+    const starts = Number(current.state.starts) - Number(oldest.state.starts);
+    const expectedGoals = Number(current.state.expectedGoals) - Number(oldest.state.expectedGoals);
+    const expectedAssists = Number(current.state.expectedAssists) - Number(oldest.state.expectedAssists);
+    const expectedGoalsConceded = Number(current.state.expectedGoalsConceded) - Number(oldest.state.expectedGoalsConceded);
+    if (events <= 0 || minutes < 0 || starts < 0 || expectedGoals < 0 || expectedAssists < 0 || expectedGoalsConceded < 0) continue;
+    const nineties = Math.max(0.1, minutes / 90);
+    profiles.set(playerId, {
+      playerId,
+      events,
+      minutes,
+      starts,
+      minutesPerEvent: minutes / events,
+      startRate: starts / events,
+      expectedGoalsPer90: expectedGoals / nineties,
+      expectedAssistsPer90: expectedAssists / nineties,
+      expectedGoalsConcededPer90: expectedGoalsConceded / nineties,
+      reliability: Math.min(1, minutes / 450),
+    });
+  }
+  return profiles;
 }
 
 // Performance Analytics

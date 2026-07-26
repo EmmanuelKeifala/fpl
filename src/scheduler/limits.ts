@@ -3,6 +3,7 @@ export interface SafetyLimits {
   maxTransfersPerWeek: number;
   minXPGainForHit: number;
   autoExecuteTransfers: boolean;
+  autoSetLineup: boolean;
   autoPlayChips: boolean;
   emergencyStop: boolean;
 }
@@ -12,6 +13,7 @@ export function getSafetyLimits(): SafetyLimits {
     maxTransfersPerWeek: parseInt(process.env.MAX_TRANSFERS_PER_WEEK || '2'),
     minXPGainForHit: parseInt(process.env.MIN_XP_GAIN_FOR_HIT || '8'),
     autoExecuteTransfers: process.env.AUTO_EXECUTE_TRANSFERS === 'true',
+    autoSetLineup: process.env.AUTO_SET_LINEUP !== 'false',
     autoPlayChips: process.env.AUTO_PLAY_CHIPS === 'true',
     emergencyStop: process.env.EMERGENCY_STOP === 'true',
   };
@@ -55,7 +57,8 @@ export function recordTransfer(): void {
 export function validateTransfer(
   xpGain: number,
   hitCost: number,
-  freeTransfers: number
+  freeTransfers: number,
+  transfersMade: number = 0
 ): { allowed: boolean; reason: string } {
   const limits = getSafetyLimits();
   
@@ -65,7 +68,7 @@ export function validateTransfer(
   }
   
   // Check weekly limit
-  if (!canMakeTransfer()) {
+  if (transfersMade >= limits.maxTransfersPerWeek || !canMakeTransfer()) {
     return { allowed: false, reason: 'Weekly transfer limit reached' };
   }
   
