@@ -15,6 +15,7 @@ function player(id: number, expectedPoints: number, price: number, elementType =
     status: 'a',
     selectedByPercent: 0,
     expectedPoints,
+    forecastProvenance: { sourceGameweek: null, availability: 'unavailable', source: 'test fixture' },
   };
 }
 
@@ -51,7 +52,7 @@ test('deterministicStrategy starts only owned players after GW1', async () => {
         fixtures: [],
         unavailableFields: [],
       },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 
@@ -86,7 +87,7 @@ test('deterministicStrategy builds a GW1 squad within budget when top picks are 
       gameweek: 1,
       deadline: '2024-08-16T17:30:00Z',
       knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 
@@ -114,7 +115,7 @@ test('deterministicStrategy builds a legal GW1 squad composition and respects cl
       gameweek: 1,
       deadline: '2024-08-16T17:30:00Z',
       knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 
@@ -141,7 +142,7 @@ test('deterministicStrategy starts a legal formation when backup goalkeeper is h
       gameweek: 2,
       deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 

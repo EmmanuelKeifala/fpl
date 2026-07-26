@@ -14,6 +14,8 @@ test('BacktestDataSource writes a manifest after prepare', async () => {
   try {
     const dataSource = new BacktestDataSource({
       season: '2024-2025',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
       cacheDir: dir,
       sourceUrls: ['https://example.test/source.json'],
       fetchJson: async () => ({ ok: true }),
@@ -26,7 +28,7 @@ test('BacktestDataSource writes a manifest after prepare', async () => {
     assert.equal(manifest.season, '2024-2025');
     assert.deepEqual(manifest.sourceUrls, ['https://example.test/source.json']);
     assert.equal(manifest.downloadedAt, '2026-05-18T00:00:00.000Z');
-    assert.equal(manifest.snapshotVersion, '2024-2025-v1');
+    assert.equal(manifest.snapshotVersion, '2024-2025-legacy-v2');
   } finally {
     await rm(dir, { recursive: true, force: true });
   }
@@ -35,7 +37,7 @@ test('BacktestDataSource writes a manifest after prepare', async () => {
 test('BacktestDataSource reports dataset presence from manifest file', async () => {
   const dir = await mkdtemp(join(tmpdir(), 'fpl-data-source-'));
   try {
-    const dataSource = new BacktestDataSource({ season: '2024-2025', cacheDir: dir, sourceUrls: [] });
+    const dataSource = new BacktestDataSource({ season: '2024-2025', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', cacheDir: dir, sourceUrls: [] });
     assert.equal(await dataSource.hasPreparedDataset(), false);
     await dataSource.writeManifest(['https://example.test/source.json']);
     assert.equal(await dataSource.hasPreparedDataset(), true);
@@ -49,6 +51,8 @@ test('BacktestDataSource removes prepared status when refresh fails', async () =
   try {
     const dataSource = new BacktestDataSource({
       season: '2024-2025',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
       cacheDir: dir,
       sourceUrls: ['https://example.test/source-1.json', 'https://example.test/source-2.json'],
       fetchJson: async (url) => {
@@ -73,6 +77,8 @@ test('BacktestDataSource default fetch passes an abort signal with timeout', asy
     let sawAbortSignal = false;
     const dataSource = new BacktestDataSource({
       season: '2024-2025',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
       cacheDir: dir,
       sourceUrls: ['data:application/json,{"ok":true}'],
       fetchTimeoutMs: 1234,
@@ -94,6 +100,8 @@ test('BacktestDataSource writes named JSON and text sources', async () => {
   try {
     const dataSource = new BacktestDataSource({
       season: '2024-2025',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
       cacheDir: dir,
       sourceUrls: [],
       sources: [
@@ -124,6 +132,8 @@ test('BacktestDataSource removes stale files for failed optional sources', async
     await writeFile(join(dir, 'xp-raw-5.csv'), 'id,xP\n1,99\n');
     const dataSource = new BacktestDataSource({
       season: '2024-2025',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
       cacheDir: dir,
       sourceUrls: [],
       sources: [

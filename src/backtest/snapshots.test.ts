@@ -13,8 +13,8 @@ function validSnapshot(): GameweekSnapshot {
     deadline: '2024-08-16T17:30:00Z',
     knownBeforeDeadline: {
       players: [
-        { id: 1, webName: 'Alpha', elementType: 3, team: 1, price: 75, status: 'a', selectedByPercent: 25.4, expectedPoints: 5.2 },
-        { id: 2, webName: 'Bravo', elementType: 2, team: 2, price: 55, status: 'a', selectedByPercent: 12.1, expectedPoints: 4.1 },
+        { id: 1, webName: 'Alpha', elementType: 3, team: 1, price: 75, status: 'a', selectedByPercent: 25.4, expectedPoints: 5.2, forecastProvenance: { sourceGameweek: null, availability: 'unavailable', source: 'test fixture' } },
+        { id: 2, webName: 'Bravo', elementType: 2, team: 2, price: 55, status: 'a', selectedByPercent: 12.1, expectedPoints: 4.1, forecastProvenance: { sourceGameweek: null, availability: 'unavailable', source: 'test fixture' } },
       ],
       fixtures: [
         { id: 10, event: 1, kickoffTime: '2024-08-17T14:00:00Z', teamHome: 1, teamAway: 2, teamHomeDifficulty: 3, teamAwayDifficulty: 4 },
@@ -33,6 +33,8 @@ function validSnapshot(): GameweekSnapshot {
       sourceUrls: ['https://example.test/gw1.json'],
       downloadedAt: '2026-05-18T00:00:00.000Z',
       snapshotVersion: '2024-2025-v1',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
       knownLimitations: ['No reliable historical injury news in fixture'],
     },
   };

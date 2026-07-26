@@ -5,7 +5,7 @@ import { applyGameweekDecision } from '../state.js';
 import type { BacktestPlayer, GameweekSnapshot, ManagerState } from '../types.js';
 
 function player(id: number, expectedPoints: number, price: number, elementType = 3, team = id): BacktestPlayer {
-  return { id, webName: `P${id}`, elementType, team, price, status: 'a', selectedByPercent: 0, expectedPoints };
+  return { id, webName: `P${id}`, elementType, team, price, status: 'a', selectedByPercent: 0, expectedPoints, forecastProvenance: { sourceGameweek: null, availability: 'unavailable', source: 'test fixture' } };
 }
 
 function legalSquadPlayers(): BacktestPlayer[] {
@@ -37,7 +37,7 @@ function snapshot(gameweek: number, players: BacktestPlayer[]): GameweekSnapshot
     deadline: '2024-10-01T10:00:00Z',
     knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
     actualResults: { playerResults: [], averageEntryScore: 0, highestScore: 0 },
-    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
   };
 }
 
@@ -49,7 +49,7 @@ test('fair strategy makes a beneficial free transfer', async () => {
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players: [...squad, replacement], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 
@@ -64,7 +64,7 @@ test('fair strategy uses triple captain on a high captain projection', async () 
     snapshot: {
       season: '2024-2025', gameweek: 24, deadline: '2025-01-01T10:00:00Z',
       knownBeforeDeadline: { players: squad, fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 
@@ -78,7 +78,7 @@ test('fair strategy uses bench boost when bench projection is high', async () =>
     snapshot: {
       season: '2024-2025', gameweek: 10, deadline: '2024-10-01T10:00:00Z',
       knownBeforeDeadline: { players: squad, fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 
@@ -98,7 +98,7 @@ test('fair strategy uses free hit when one-week squad projection clears threshol
     snapshot: {
       season: '2024-2025', gameweek: 9, deadline: '2024-10-01T10:00:00Z',
       knownBeforeDeadline: { players: [...current, ...upgrades], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 
@@ -120,7 +120,7 @@ test('fair strategy uses wildcard when rebuilt squad projection clears threshold
     snapshot: {
       season: '2024-2025', gameweek: 12, deadline: '2024-11-01T10:00:00Z',
       knownBeforeDeadline: { players: [...current, ...upgrades], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 

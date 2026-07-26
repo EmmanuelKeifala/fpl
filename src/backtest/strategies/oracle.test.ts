@@ -4,12 +4,12 @@ import { createOracleStrategy } from './oracle.js';
 import type { GameweekSnapshot, ManagerState } from '../types.js';
 
 function snapshot(gameweek: number, pointsByPlayer: Record<number, number>): GameweekSnapshot {
-  const players = Object.keys(pointsByPlayer).map(id => Number(id)).map(id => ({ id, webName: `P${id}`, elementType: id <= 2 ? 1 : id <= 7 ? 2 : id <= 12 ? 3 : 4, team: id, price: 45, status: 'a', selectedByPercent: 0, expectedPoints: 1 }));
+  const players = Object.keys(pointsByPlayer).map(id => Number(id)).map(id => ({ id, webName: `P${id}`, elementType: id <= 2 ? 1 : id <= 7 ? 2 : id <= 12 ? 3 : 4, team: id, price: 45, status: 'a', selectedByPercent: 0, expectedPoints: 1, forecastProvenance: { sourceGameweek: null, availability: 'unavailable' as const, source: 'test fixture' } }));
   return {
     season: '2024-2025', gameweek, deadline: '2024-08-16T10:00:00Z',
     knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
     actualResults: { playerResults: players.map(player => ({ playerId: player.id, minutes: 90, totalPoints: pointsByPlayer[player.id] ?? 0 })), averageEntryScore: 0, highestScore: 0 },
-    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
   };
 }
 

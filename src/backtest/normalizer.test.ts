@@ -51,6 +51,8 @@ test('normalizeVaastavSnapshots writes valid snapshots for requested gameweeks',
       sourceUrls: ['https://example.test/vaastav'],
       downloadedAt: '2026-05-19T00:00:00.000Z',
       snapshotVersion: '2024-2025-v1',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
     });
 
     const snapshot = await new FileSnapshotStore(dir).getSnapshot(1);
@@ -66,6 +68,11 @@ test('normalizeVaastavSnapshots writes valid snapshots for requested gameweeks',
       status: 'a',
       selectedByPercent: 0,
       expectedPoints: 4.5,
+      forecastProvenance: {
+        sourceGameweek: 1,
+        availability: 'unavailable',
+        source: 'Vaastav same-gameweek xP (deadline safety unverified)',
+      },
     });
     assert.deepEqual(snapshot.actualResults.playerResults.find(result => result.playerId === 3), {
       playerId: 3,
@@ -89,6 +96,8 @@ test('normalizeVaastavSnapshots prefers optional xP overlay values by id', async
       sourceUrls: ['https://example.test/vaastav'],
       downloadedAt: '2026-05-19T00:00:00.000Z',
       snapshotVersion: '2024-2025-v1',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
     });
 
     const snapshot = await new FileSnapshotStore(dir).getSnapshot(1);
@@ -116,6 +125,8 @@ test('normalizeVaastavSnapshots ignores unsupported non-player rows', async () =
       sourceUrls: ['https://example.test/vaastav'],
       downloadedAt: '2026-05-19T00:00:00.000Z',
       snapshotVersion: '2024-2025-v1',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
     });
 
     const snapshot = await new FileSnapshotStore(dir).getSnapshot(1);
@@ -143,6 +154,8 @@ test('normalizeVaastavSnapshots aggregates repeated supported element rows', asy
       sourceUrls: ['https://example.test/vaastav'],
       downloadedAt: '2026-05-19T00:00:00.000Z',
       snapshotVersion: '2024-2025-v1',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
     });
 
     const snapshot = await new FileSnapshotStore(dir).getSnapshot(1);
@@ -180,6 +193,8 @@ test('normalizeVaastavSnapshots carries previously seen players into later snaps
       sourceUrls: ['https://example.test/vaastav'],
       downloadedAt: '2026-05-19T00:00:00.000Z',
       snapshotVersion: '2024-2025-v1',
+      dataMode: 'legacy',
+      rulesVersion: 'legacy-global-v1',
     });
 
     const store = new FileSnapshotStore(dir);
@@ -213,6 +228,8 @@ test('normalizeVaastavSnapshots preserves existing snapshot when required column
           sourceUrls: ['https://example.test/vaastav'],
           downloadedAt: '2026-05-19T00:00:00.000Z',
           snapshotVersion: '2024-2025-v1',
+          dataMode: 'legacy',
+          rulesVersion: 'legacy-global-v1',
         }),
       /gw-raw-1.csv is missing required columns/
     );

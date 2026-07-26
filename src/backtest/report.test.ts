@@ -7,6 +7,8 @@ const provenance: SnapshotProvenance = {
   sourceUrls: ['https://example.test/source.json'],
   downloadedAt: '2026-05-18T00:00:00.000Z',
   snapshotVersion: '2024-2025-v1',
+  dataMode: 'legacy',
+  rulesVersion: 'legacy-global-v1',
   knownLimitations: ['No historical injury-news cache'],
 };
 

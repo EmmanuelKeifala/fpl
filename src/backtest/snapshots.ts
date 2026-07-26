@@ -1,14 +1,6 @@
 import { readFile } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { BacktestPlayer, DecisionSnapshotInput, GameweekSnapshot, SnapshotProvenance } from './types.js';
-
-type PersistedBacktestPlayer = Omit<BacktestPlayer, 'forecastProvenance'> & Partial<Pick<BacktestPlayer, 'forecastProvenance'>>;
-type PersistedSnapshotProvenance = Omit<SnapshotProvenance, 'dataMode' | 'rulesVersion'>
-  & Partial<Pick<SnapshotProvenance, 'dataMode' | 'rulesVersion'>>;
-type PersistedGameweekSnapshot = Omit<GameweekSnapshot, 'knownBeforeDeadline' | 'provenance'> & {
-  knownBeforeDeadline: Omit<GameweekSnapshot['knownBeforeDeadline'], 'players'> & { players: PersistedBacktestPlayer[] };
-  provenance: PersistedSnapshotProvenance;
-};
+import type { DecisionSnapshotInput, GameweekSnapshot } from './types.js';
 
 export interface ValidationResult {
   valid: boolean;
@@ -57,15 +49,7 @@ export class FileSnapshotStore {
 
   async getSnapshot(gameweek: number): Promise<GameweekSnapshot> {
     const raw = await readFile(join(this.directory, `gw-${gameweek}.json`), 'utf8');
-    const parsed = JSON.parse(raw) as PersistedGameweekSnapshot;
-    const snapshot: GameweekSnapshot = {
-      ...parsed,
-      knownBeforeDeadline: {
-        ...parsed.knownBeforeDeadline,
-        players: parsed.knownBeforeDeadline.players.map(player => withLegacyForecastProvenance(player, parsed.gameweek)),
-      },
-      provenance: withLegacySnapshotProvenance(parsed.provenance),
-    };
+    const snapshot = JSON.parse(raw) as GameweekSnapshot;
     const validation = validateSnapshot(snapshot);
 
     if (!validation.valid) {
@@ -84,24 +68,4 @@ export class FileSnapshotStore {
       provenance: snapshot.provenance,
     };
   }
-}
-
-function withLegacyForecastProvenance(player: PersistedBacktestPlayer, gameweek: number): BacktestPlayer {
-  if (player.forecastProvenance) return { ...player, forecastProvenance: player.forecastProvenance };
-  return {
-    ...player,
-    forecastProvenance: {
-      sourceGameweek: gameweek,
-      availability: 'unavailable',
-      source: 'Persisted legacy snapshot; deadline safety unverified',
-    },
-  };
-}
-
-function withLegacySnapshotProvenance(provenance: PersistedSnapshotProvenance): SnapshotProvenance {
-  return {
-    ...provenance,
-    dataMode: provenance.dataMode ?? 'legacy',
-    rulesVersion: provenance.rulesVersion ?? 'legacy-global-v1',
-  };
 }

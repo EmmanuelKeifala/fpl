@@ -8,7 +8,7 @@ const STARTING_XI = [1, 3, 4, 5, 8, 9, 10, 11, 13, 14, 15];
 const BENCH = [2, 6, 7, 12];
 
 function player(id: number, webName: string, elementType: number, team: number, price: number, expectedPoints: number): BacktestPlayer {
-  return { id, webName, elementType, team, price, status: 'a', selectedByPercent: 10, expectedPoints };
+  return { id, webName, elementType, team, price, status: 'a', selectedByPercent: 10, expectedPoints, forecastProvenance: { sourceGameweek: null, availability: 'unavailable', source: 'test fixture' } };
 }
 
 function makeSnapshot(gameweek: number, midfielderPoints: number): GameweekSnapshot {
@@ -42,7 +42,7 @@ function makeSnapshot(gameweek: number, midfielderPoints: number): GameweekSnaps
       averageEntryScore: 50,
       highestScore: 100,
     },
-    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: '2024-2025-v1', knownLimitations: [] },
+    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-18T00:00:00.000Z', snapshotVersion: '2024-2025-v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
   };
 }
 

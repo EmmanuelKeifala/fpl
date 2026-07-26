@@ -5,7 +5,7 @@ import { selectCaptaincy, selectLineup } from './lineup.js';
 import type { BacktestPlayer } from '../types.js';
 
 function player(id: number, expectedPoints: number, elementType: number): BacktestPlayer {
-  return { id, webName: `P${id}`, elementType, team: id, price: 50, status: 'a', selectedByPercent: 0, expectedPoints };
+  return { id, webName: `P${id}`, elementType, team: id, price: 50, status: 'a', selectedByPercent: 0, expectedPoints, forecastProvenance: { sourceGameweek: null, availability: 'unavailable', source: 'test fixture' } };
 }
 
 test('selectLineup chooses one goalkeeper even when both goalkeepers rank highly', () => {

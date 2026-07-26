@@ -6,7 +6,7 @@ import { createHybridStrategy } from './hybrid-strategy.js';
 import type { BacktestPlayer, ManagerState } from '../types.js';
 
 function player(id: number, expectedPoints: number, price: number, elementType = 3, team = id): BacktestPlayer {
-  return { id, webName: `P${id}`, elementType, team, price, status: 'a', selectedByPercent: 0, expectedPoints };
+  return { id, webName: `P${id}`, elementType, team, price, status: 'a', selectedByPercent: 0, expectedPoints, forecastProvenance: { sourceGameweek: null, availability: 'unavailable', source: 'test fixture' } };
 }
 
 function legalSquadPlayers(): BacktestPlayer[] {
@@ -43,7 +43,7 @@ test('buildCandidateDecisions includes several one-transfer alternatives', () =>
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
     maxCandidates: 4,
   });
@@ -58,7 +58,7 @@ test('buildCandidateDecisions excludes hit candidates unless allowed', () => {
   const snapshot = {
     season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
     knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
-    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+    provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy' as const, rulesVersion: 'legacy-global-v1', knownLimitations: [] },
   };
 
   const conservative = buildCandidateDecisions({ state: stateWithSquad(squad), snapshot, allowHits: false, maxCandidates: 8 });
@@ -77,7 +77,7 @@ test('buildCandidateDecisions includes no-hit two-transfer candidates with two f
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
     allowHits: false,
     hitThreshold: 10,
@@ -104,7 +104,7 @@ test('buildCandidateDecisions ranks strong free multi-transfer candidates before
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
     allowHits: false,
     maxCandidates: 6,
@@ -126,7 +126,7 @@ test('buildCandidateDecisions can fund a hit upgrade with a downgrade', () => {
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
     allowHits: true,
     hitThreshold: 7,
@@ -151,7 +151,7 @@ test('buildCandidateDecisions ignores low-projection hit candidates outside the 
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players: [...squad, ...replacements], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
     allowHits: true,
     hitThreshold: 7,
@@ -168,7 +168,7 @@ test('buildCandidateDecisions creates an initial squad candidate in GW1', () => 
     snapshot: {
       season: '2024-2025', gameweek: 1, deadline: '2024-08-16T17:30:00Z',
       knownBeforeDeadline: { players, fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 
@@ -190,7 +190,7 @@ test('createHybridStrategy returns the ranker selected candidate unchanged', asy
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players: [...squad, replacement], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00.000Z', snapshotVersion: 'v1', dataMode: 'legacy', rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
   });
 

@@ -4,7 +4,7 @@ import { chooseBestTransfers } from './transfers.js';
 import type { BacktestPlayer, SquadPick } from '../types.js';
 
 function player(id: number, expectedPoints: number, price: number, elementType = 3, team = id): BacktestPlayer {
-  return { id, webName: `P${id}`, elementType, team, price, status: 'a', selectedByPercent: 0, expectedPoints };
+  return { id, webName: `P${id}`, elementType, team, price, status: 'a', selectedByPercent: 0, expectedPoints, forecastProvenance: { sourceGameweek: null, availability: 'unavailable', source: 'test fixture' } };
 }
 
 function pick(playerId: number, price = 50): SquadPick {

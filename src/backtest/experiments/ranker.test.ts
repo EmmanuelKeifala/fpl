@@ -32,7 +32,7 @@ function rankerInput() {
     snapshot: {
       season: '2024-2025', gameweek: 2, deadline: '2024-08-24T10:00:00Z',
       knownBeforeDeadline: { players: [], fixtures: [], unavailableFields: [] },
-      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00Z', snapshotVersion: 'v1', knownLimitations: [] },
+      provenance: { sourceUrls: ['https://example.test'], downloadedAt: '2026-05-20T00:00:00Z', snapshotVersion: 'v1', dataMode: 'legacy' as const, rulesVersion: 'legacy-global-v1', knownLimitations: [] },
     },
     candidates,
     news: [],
