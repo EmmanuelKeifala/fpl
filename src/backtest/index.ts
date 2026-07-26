@@ -50,6 +50,7 @@ interface PrepareDataDependencies {
 }
 
 const DEFAULT_SEASON = '2024-2025';
+const LEGACY_RULES_VERSION = 'legacy-global-v1';
 
 function parseSeason(value: string): string {
   const match = /^(\d{4})-(\d{4})$/.exec(value);
@@ -127,6 +128,8 @@ export async function prepareDataWithDependencies(dependencies: PrepareDataDepen
     dependencies.dataSource ??
     new BacktestDataSource({
       season,
+      dataMode: 'legacy',
+      rulesVersion: LEGACY_RULES_VERSION,
       cacheDir: preparedCacheDir,
       sourceUrls,
       sources: sourceDescriptors,
@@ -140,7 +143,9 @@ export async function prepareDataWithDependencies(dependencies: PrepareDataDepen
       gameweeks: Array.from({ length: 38 }, (_, index) => index + 1),
       sourceUrls,
       downloadedAt,
-      snapshotVersion: `${season}-v1`,
+      snapshotVersion: `${season}-legacy-v2`,
+      dataMode: 'legacy',
+      rulesVersion: LEGACY_RULES_VERSION,
     });
   } catch (error) {
     await removeManifest(preparedCacheDir);

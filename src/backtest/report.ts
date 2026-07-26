@@ -1,5 +1,5 @@
 import type { ChipName } from '../strategy/rules.js';
-import type { GameweekSnapshot, ManagerState, SnapshotProvenance, WeeklyResult } from './types.js';
+import type { GameweekSnapshot, ManagerState, ReplayDataMode, SnapshotProvenance, WeeklyResult } from './types.js';
 
 export type BacktestStrategyName = 'baseline' | 'fair' | 'autonomous' | 'oracle';
 
@@ -18,6 +18,9 @@ export interface ChipReportRow {
 export interface BacktestReport {
   strategy: BacktestStrategyName;
   season: string;
+  dataMode: ReplayDataMode;
+  rulesVersion: string;
+  integrityWarning: string | null;
   totalPoints: number;
   captainPointsTotal: number;
   benchPointsTotal: number;
@@ -57,6 +60,7 @@ export function buildBacktestReport(
   snapshots: GameweekSnapshot[] = [],
   top10kCutoff?: number,
 ): BacktestReport {
+  const integrityWarning = getIntegrityWarning(provenance.dataMode);
   const transfers = state.decisions.flatMap(decision => decision.transfers.map(transfer => ({
     gameweek: decision.gameweek,
     out: transfer.out,
@@ -90,13 +94,18 @@ export function buildBacktestReport(
   return {
     strategy,
     season: state.season,
+    dataMode: provenance.dataMode,
+    rulesVersion: provenance.rulesVersion,
+    integrityWarning,
     totalPoints: state.totalPoints,
     captainPointsTotal: state.weeklyResults.reduce((total, result) => total + result.captainPoints, 0),
     benchPointsTotal: state.weeklyResults.reduce((total, result) => total + result.benchPoints, 0),
     estimatedRankPercentile: null,
     top10kCutoff: top10kCutoff ?? null,
     pointsVsTop10k: top10kCutoff === undefined ? null : state.totalPoints - top10kCutoff,
-    metTop10kBenchmark: top10kCutoff === undefined ? null : state.totalPoints >= top10kCutoff,
+    metTop10kBenchmark: top10kCutoff === undefined || provenance.dataMode !== 'strict'
+      ? null
+      : state.totalPoints >= top10kCutoff,
     weekly: state.weeklyResults,
     weeklyBenchmark,
     averageTotal: cumulativeAverage,
@@ -120,6 +129,9 @@ export function formatBacktestSummary(report: BacktestReport): string {
   return [
     `Season: ${report.season}`,
     `Strategy: ${report.strategy}`,
+    `Data mode: ${report.dataMode}`,
+    `Rules version: ${report.rulesVersion}`,
+    ...(report.integrityWarning ? [`Integrity warning: ${report.integrityWarning}`] : []),
     `Total points: ${report.totalPoints}`,
     `FPL average total: ${report.averageTotal}`,
     `Points vs average: ${report.pointsAboveAverage >= 0 ? '+' : ''}${report.pointsAboveAverage}`,
@@ -133,4 +145,14 @@ export function formatBacktestSummary(report: BacktestReport): string {
     `Squad value: ${squadValue}m`,
     `Snapshot version: ${report.provenance.snapshotVersion}`,
   ].join('\n');
+}
+
+function getIntegrityWarning(dataMode: ReplayDataMode): string | null {
+  if (dataMode === 'legacy') {
+    return 'Legacy replay data is diagnostic only and cannot support verified performance claims.';
+  }
+  if (dataMode === 'reconstructed') {
+    return 'Reconstructed replay data cannot claim verified top-10k performance.';
+  }
+  return null;
 }

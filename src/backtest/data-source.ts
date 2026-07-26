@@ -1,5 +1,6 @@
 import { access, mkdir, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import type { ReplayDataMode } from './types.js';
 
 const DEFAULT_FETCH_TIMEOUT_MS = 30_000;
 
@@ -14,6 +15,8 @@ export interface BacktestSourceDescriptor {
 
 export interface BacktestDataSourceOptions {
   season: string;
+  dataMode: ReplayDataMode;
+  rulesVersion: string;
   cacheDir: string;
   sourceUrls: string[];
   sources?: BacktestSourceDescriptor[];
@@ -26,6 +29,8 @@ export interface BacktestDataSourceOptions {
 
 export interface BacktestManifest {
   season: string;
+  dataMode: ReplayDataMode;
+  rulesVersion: string;
   sourceUrls: string[];
   downloadedAt: string;
   snapshotVersion: string;
@@ -87,9 +92,11 @@ export class BacktestDataSource {
     await mkdir(this.options.cacheDir, { recursive: true });
     const manifest: BacktestManifest = {
       season: this.options.season,
+      dataMode: this.options.dataMode,
+      rulesVersion: this.options.rulesVersion,
       sourceUrls,
       downloadedAt: this.now().toISOString(),
-      snapshotVersion: `${this.options.season}-v1`,
+      snapshotVersion: `${this.options.season}-${this.options.dataMode}-v2`,
     };
     await writeFile(join(this.options.cacheDir, 'manifest.json'), JSON.stringify(manifest, null, 2));
   }

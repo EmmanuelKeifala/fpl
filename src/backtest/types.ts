@@ -1,5 +1,14 @@
 import type { ChipName } from '../strategy/rules.js';
 
+export type ReplayDataMode = 'legacy' | 'reconstructed' | 'strict';
+export type FieldAvailability = 'exact' | 'lagged' | 'reconstructed' | 'unavailable';
+
+export interface ForecastProvenance {
+  sourceGameweek: number | null;
+  availability: FieldAvailability;
+  source: string;
+}
+
 export interface BacktestPlayer {
   id: number;
   webName: string;
@@ -9,6 +18,7 @@ export interface BacktestPlayer {
   status: string;
   selectedByPercent: number;
   expectedPoints: number;
+  forecastProvenance: ForecastProvenance;
 }
 
 export interface BacktestFixture {
@@ -31,6 +41,8 @@ export interface SnapshotProvenance {
   sourceUrls: string[];
   downloadedAt: string;
   snapshotVersion: string;
+  dataMode: ReplayDataMode;
+  rulesVersion: string;
   knownLimitations: string[];
 }
 

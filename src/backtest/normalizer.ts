@@ -2,7 +2,7 @@ import { readFile, rename, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { parseCsv, requireColumns, type CsvRow } from './csv.js';
 import { validateSnapshot } from './snapshots.js';
-import type { BacktestFixture, BacktestPlayer, GameweekSnapshot, PlayerGameweekResult } from './types.js';
+import type { BacktestFixture, BacktestPlayer, GameweekSnapshot, PlayerGameweekResult, ReplayDataMode } from './types.js';
 
 export interface NormalizeVaastavSnapshotsOptions {
   season: string;
@@ -11,6 +11,8 @@ export interface NormalizeVaastavSnapshotsOptions {
   sourceUrls: string[];
   downloadedAt: string;
   snapshotVersion: string;
+  dataMode: ReplayDataMode;
+  rulesVersion: string;
 }
 
 const GW_COLUMNS = ['element', 'name', 'position', 'team', 'value', 'xP', 'minutes', 'total_points', 'round', 'kickoff_time'];
@@ -210,6 +212,15 @@ function buildSnapshot(input: {
       status: currentRow === undefined ? 'u' : 'a',
       selectedByPercent: 0,
       expectedPoints: input.xpByElement.get(playerId) ?? (currentRow === undefined ? 0 : parseNumber(sourceRow.xP, 'xP')),
+      forecastProvenance: {
+        sourceGameweek: currentRow === undefined ? null : input.gameweek,
+        availability: 'unavailable',
+        source: currentRow === undefined
+          ? 'legacy missing same-gameweek xP default'
+          : input.xpByElement.has(playerId)
+            ? 'Vaastav same-gameweek xP overlay (deadline safety unverified)'
+            : 'Vaastav same-gameweek xP (deadline safety unverified)',
+      },
     });
     playerResults.push(playerResultsById.get(playerId) ?? { playerId, minutes: 0, totalPoints: 0 });
   }
@@ -234,6 +245,8 @@ function buildSnapshot(input: {
       sourceUrls: input.options.sourceUrls,
       downloadedAt: input.options.downloadedAt,
       snapshotVersion: input.options.snapshotVersion,
+      dataMode: input.options.dataMode,
+      rulesVersion: input.options.rulesVersion,
       knownLimitations: input.eventMetadata
         ? UNAVAILABLE_FIELDS.filter(field => !field.includes('deadline') && !field.includes('default scores'))
         : UNAVAILABLE_FIELDS,
