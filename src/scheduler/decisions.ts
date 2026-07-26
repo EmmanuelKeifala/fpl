@@ -2,11 +2,17 @@
 // Includes intelligence gathering for late news and player updates
 import { getFPLClient } from '../api/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
-import { logDecision, getDecisionsByType } from '../db/client.js';
+import { logDecision, getDecisionsByType, savePlayerNewsSignals } from '../db/client.js';
 import { validateTransfer, validateChip, resetWeeklyTransfers } from './limits.js';
 import { gatherFPLNews, type NewsItem } from './news.js';
 import type { Player, MyTeam } from '../api/types.js';
 import type { TeamSelection } from '../api/client.js';
+import {
+  buildExternalNewsSignals,
+  buildOfficialNewsSignals,
+  mergePlayerNewsSignals,
+  type PlayerNewsSignal,
+} from './news-signals.js';
 
 export interface TransferCandidate {
   playerOut: Player;
@@ -58,6 +64,7 @@ export interface DecisionContext {
   playerStatusChanges: { player: Player; oldStatus: string; newStatus: string }[];
   newsAlerts: string[];
   externalNews: NewsItem[];
+  newsSignals: PlayerNewsSignal[];
 }
 
 // Cache for detecting player status changes (late news)
@@ -67,11 +74,12 @@ const playerStatusCache = new Map<number, string>();
  * Gather intelligence on player status changes since last check
  * This catches late news like injuries, doubts, suspensions
  */
-export async function gatherIntelligence(): Promise<{
+export async function gatherIntelligence(gameweek?: number, deadline?: Date): Promise<{
   statusChanges: { player: Player; oldStatus: string; newStatus: string }[];
   priceChanges: { player: Player; direction: 'up' | 'down'; amount: number }[];
   newsAlerts: string[];
   externalNews: NewsItem[];
+  newsSignals: PlayerNewsSignal[];
 }> {
   const engine = await getOptimizationEngine();
   const allPlayers = engine.getAllPlayers();
@@ -123,13 +131,21 @@ export async function gatherIntelligence(): Promise<{
   
   // Gather external news from Twitter and FPL websites
   const externalNews = await gatherFPLNews();
+  const targetGameweek = gameweek ?? engine.getNextDeadline()?.gameweek ?? engine.getCurrentGameweek();
+  const targetDeadline = deadline ?? engine.getNextDeadline()?.deadline ?? new Date(Date.now() + 7 * 86_400_000);
+  const newsSignals = mergePlayerNewsSignals([
+    ...buildOfficialNewsSignals(allPlayers, targetGameweek, targetDeadline),
+    ...buildExternalNewsSignals({ items: externalNews, players: allPlayers, gameweek: targetGameweek, deadline: targetDeadline }),
+  ]);
+  engine.setNewsSignals(newsSignals);
+  await savePlayerNewsSignals(newsSignals);
   
   // Add high priority news to alerts
   for (const news of externalNews.filter(n => n.priority === 'high')) {
     newsAlerts.push(`BREAKING: ${news.title.substring(0, 100)}`);
   }
   
-  return { statusChanges, priceChanges, newsAlerts, externalNews };
+  return { statusChanges, priceChanges, newsAlerts, externalNews, newsSignals };
 }
 
 /**
@@ -640,7 +656,7 @@ export async function buildDecisionContext(): Promise<DecisionContext | null> {
   const teamHealth = await analyzeTeamHealth(myTeam);
   
   // Gather intelligence on player changes
-  const intelligence = await gatherIntelligence();
+  const intelligence = await gatherIntelligence(gameweek, deadlineInfo?.deadline);
   
   return {
     gameweek,
@@ -653,5 +669,6 @@ export async function buildDecisionContext(): Promise<DecisionContext | null> {
     playerStatusChanges: intelligence.statusChanges,
     newsAlerts: intelligence.newsAlerts,
     externalNews: intelligence.externalNews,
+    newsSignals: intelligence.newsSignals,
   };
 }

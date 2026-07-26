@@ -41,6 +41,8 @@ interface RunnerState {
 
 const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MINUTES || '30') * 60 * 1000;
 const PRE_DEADLINE_HOURS = parseInt(process.env.PRE_DEADLINE_HOURS || '2');
+const DEADLINE_NEWS_WINDOW = parseInt(process.env.DEADLINE_NEWS_WINDOW_MINUTES || '90') * 60 * 1000;
+const DEADLINE_NEWS_POLL_INTERVAL = parseInt(process.env.DEADLINE_NEWS_POLL_MINUTES || '5') * 60 * 1000;
 
 let runnerState: RunnerState = {
   phase: 'monitor',
@@ -486,6 +488,13 @@ async function safeRunCycle(): Promise<void> {
   }
 }
 
+async function nextPollInterval(): Promise<number> {
+  const deadline = (await getOptimizationEngine()).getNextDeadline()?.deadline;
+  if (!deadline) return POLL_INTERVAL;
+  const remaining = deadline.getTime() - Date.now();
+  return remaining > 0 && remaining <= DEADLINE_NEWS_WINDOW ? DEADLINE_NEWS_POLL_INTERVAL : POLL_INTERVAL;
+}
+
 async function main(): Promise<void> {
   const initialized = await initialize();
   
@@ -496,24 +505,23 @@ async function main(): Promise<void> {
   
   console.log('[MAIN] Starting polling loop...\n');
   
-  // Run initial cycle
-  await safeRunCycle();
-  
-  // Set up polling loop
-  const intervalId = setInterval(async () => {
+  let timeoutId: NodeJS.Timeout;
+  const poll = async () => {
     await safeRunCycle();
-  }, POLL_INTERVAL);
+    timeoutId = setTimeout(poll, await nextPollInterval());
+  };
+  await poll();
   
   // Handle graceful shutdown
   process.on('SIGINT', () => {
     console.log('\n[MAIN] Received SIGINT. Shutting down gracefully...');
-    clearInterval(intervalId);
+    clearTimeout(timeoutId);
     process.exit(0);
   });
   
   process.on('SIGTERM', () => {
     console.log('\n[MAIN] Received SIGTERM. Shutting down gracefully...');
-    clearInterval(intervalId);
+    clearTimeout(timeoutId);
     process.exit(0);
   });
 }

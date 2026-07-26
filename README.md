@@ -45,6 +45,8 @@ The worker automatically optimizes the legal starting XI, bench order, captain, 
 
 Autonomous mode also stores point-in-time player and fixture changes, takes periodic pre-deadline forecast snapshots, and reconciles predictions with actual points after each finished gameweek.
 
+Official availability updates and timestamped trusted news are resolved to players and applied to expected minutes before transfers, lineup, and captaincy are optimized. Inside the final 90 minutes, news polling increases to every five minutes by default. Undated website items are treated as low confidence, and post-deadline items are rejected.
+
 ## Usage
 
 Ask the agent questions like:

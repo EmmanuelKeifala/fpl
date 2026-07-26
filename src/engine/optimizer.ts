@@ -3,6 +3,7 @@ import { getFPLClient } from '../api/client.js';
 import type { Player, Fixture, Team, Gameweek } from '../api/types.js';
 import { projectPlayerPoints } from '../strategy/projections.js';
 import { getForecastAccuracy, getRollingPlayerProfiles, type RollingPlayerProfile } from '../db/client.js';
+import type { PlayerNewsSignal } from '../scheduler/news-signals.js';
 
 export interface ExpectedPoints {
   playerId: number;
@@ -21,6 +22,8 @@ export interface ExpectedPoints {
     calibrationAdjustment: number;
     setpieceFactor: number;
     defensiveContribution: number;
+    newsMultiplier: number;
+    newsConfidence: number;
   };
 }
 
@@ -70,6 +73,11 @@ class OptimizationEngine {
   private currentGW: number = 1;
   private rollingProfiles = new Map<number, RollingPlayerProfile>();
   private calibrationBias = 0;
+  private newsSignals = new Map<number, PlayerNewsSignal>();
+
+  setNewsSignals(signals: PlayerNewsSignal[]): void {
+    this.newsSignals = new Map(signals.map(signal => [signal.playerId, signal]));
+  }
 
   async initialize(): Promise<void> {
     const client = getFPLClient();
@@ -124,9 +132,12 @@ class OptimizationEngine {
     ));
     const rollingProfile = this.rollingProfiles.get(player.id);
     const rollingWeight = (rollingProfile?.reliability ?? 0) * 0.65;
-    const expectedMinutes = Math.max(0, Math.min(90,
+    const healthyExpectedMinutes = Math.max(0, Math.min(90,
       seasonExpectedMinutes * (1 - rollingWeight) + (rollingProfile?.minutesPerEvent ?? seasonExpectedMinutes) * rollingWeight
     ));
+    const newsSignal = this.newsSignals.get(player.id);
+    const newsMultiplier = newsSignal?.minutesMultiplier ?? 1;
+    const expectedMinutes = healthyExpectedMinutes * newsMultiplier;
     const minutesFactor = expectedMinutes / 90;
     const rateReliability = Math.min(1, player.minutes / 900);
     
@@ -148,9 +159,10 @@ class OptimizationEngine {
     }
     
     const nextFixtures = this.getUpcomingFixtures(player.team, 1);
-    const appearanceProbability = player.status === 'a'
+    const healthyAppearanceProbability = player.status === 'a'
       ? ((player.chance_of_playing_next_round ?? 100) / 100)
       : ((player.chance_of_playing_next_round ?? 0) / 100);
+    const appearanceProbability = newsMultiplier === 0 ? 0 : healthyAppearanceProbability;
     const goalRatePrior = [0, 0.01, 0.05, 0.22, 0.35][player.element_type] ?? 0.15;
     const assistRatePrior = [0, 0.01, 0.08, 0.18, 0.12][player.element_type] ?? 0.1;
     const seasonGoalsPer90 = (player.expected_goals_per_90 || 0) * rateReliability + goalRatePrior * (1 - rateReliability);
@@ -245,6 +257,8 @@ class OptimizationEngine {
         calibrationAdjustment: Math.round(calibrationAdjustment * 100) / 100,
         setpieceFactor: Math.round(setpieceFactor * 100) / 100,
         defensiveContribution: projection.breakdown.defensiveContribution,
+        newsMultiplier,
+        newsConfidence: newsSignal?.confidence ?? 0,
       },
     };
   }

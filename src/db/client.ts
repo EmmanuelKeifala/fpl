@@ -6,6 +6,7 @@ import { dirname, join } from 'path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
 import type { Fixture, Player } from '../api/types.js';
 import type { ExpectedPoints } from '../engine/optimizer.js';
+import type { PlayerNewsSignal } from '../scheduler/news-signals.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -167,14 +168,65 @@ async function initDatabase(): Promise<SqlJsDatabase> {
       captured_at INTEGER NOT NULL
     )
   `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS player_news_signals (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gameweek INTEGER NOT NULL,
+      player_id INTEGER NOT NULL,
+      signal_type TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_tier INTEGER NOT NULL,
+      confidence REAL NOT NULL,
+      minutes_multiplier REAL NOT NULL,
+      published_at INTEGER,
+      retrieved_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      evidence TEXT NOT NULL,
+      timestamp_verified INTEGER NOT NULL
+    )
+  `);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_observations_lookup ON player_observations(player_id, id)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_fixture_observations_lookup ON fixture_observations(fixture_id, id)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_forecasts_gameweek ON player_forecasts(gameweek, player_id, horizon)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_news_signals_gameweek ON player_news_signals(gameweek, player_id)`);
   
   dbReady = true;
   saveDatabase();
   
   return sqlDb;
+}
+
+export async function savePlayerNewsSignals(signals: PlayerNewsSignal[]): Promise<number> {
+  if (signals.length === 0) return 0;
+  const db = await initDatabase();
+  const statement = db.prepare(`
+    INSERT INTO player_news_signals (
+      gameweek, player_id, signal_type, source, source_tier, confidence,
+      minutes_multiplier, published_at, retrieved_at, expires_at, evidence, timestamp_verified
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `);
+  try {
+    for (const signal of signals) {
+      statement.run([
+        signal.gameweek,
+        signal.playerId,
+        signal.type,
+        signal.source,
+        signal.sourceTier,
+        signal.confidence,
+        signal.minutesMultiplier,
+        signal.publishedAt?.getTime() ?? null,
+        signal.retrievedAt.getTime(),
+        signal.expiresAt.getTime(),
+        signal.evidence,
+        signal.timestampVerified ? 1 : 0,
+      ]);
+    }
+  } finally {
+    statement.free();
+  }
+  saveDatabase();
+  return signals.length;
 }
 
 function saveDatabase(): void {

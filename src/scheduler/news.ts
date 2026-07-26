@@ -6,6 +6,7 @@ export interface NewsItem {
   title: string;
   content: string;
   timestamp: Date;
+  timestampVerified: boolean;
   url?: string;
   priority: 'high' | 'medium' | 'low';
   playerInvolved?: string;
@@ -117,6 +118,7 @@ export async function checkTwitterNews(): Promise<NewsItem[]> {
           title: tweet.text.substring(0, 100),
           content: tweet.text,
           timestamp: new Date(tweet.created_at),
+          timestampVerified: true,
           priority: text.includes('breaking') || text.includes('confirmed') ? 'high' : 'medium',
           playerInvolved: playerMatch?.[1],
         });
@@ -188,6 +190,7 @@ export async function checkFPLWebsites(): Promise<NewsItem[]> {
             title: `${player} - injury/fitness update`,
             content: `Potential injury news for ${player}`,
             timestamp: new Date(),
+            timestampVerified: false,
             priority: 'medium',
             playerInvolved: player,
           });
