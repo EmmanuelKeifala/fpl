@@ -92,14 +92,18 @@ export function applyGameweekDecision(
     captainPoints,
     benchPoints,
     chip: decision.chip,
+    chipGain: decision.chip === 'bboost'
+      ? benchBoostPoints
+      : decision.chip === '3xc'
+        ? captainScore
+        : undefined,
     squadValue: calculateSquadValue(squad, bank, playersById),
     bank,
   };
   const persistedSquad = decision.chip === 'freehit' ? refreshedStateSquad : squad;
   const persistedBank = decision.chip === 'freehit' ? state.bank : bank;
-  const transfersForFreeTransferCarryover = decision.chip === 'wildcard' || decision.chip === 'freehit'
-    ? 0
-    : decision.squad && transfersMade === 0 ? 1 : transfersMade;
+  const transferChip = decision.chip === 'wildcard' || decision.chip === 'freehit';
+  const transfersForFreeTransferCarryover = decision.squad && transfersMade === 0 ? 1 : transferChip ? 0 : transfersMade;
 
   return {
     season: state.season,
@@ -110,6 +114,7 @@ export function applyGameweekDecision(
       previousFreeTransfers: state.freeTransfers,
       transfersMade: transfersForFreeTransferCarryover,
       nextGameweek: decision.gameweek + 1,
+      accrue: !transferChip,
     }),
     chipsAvailable: nextChipInventory(state, decision),
     totalPoints: state.totalPoints + points,
@@ -186,10 +191,15 @@ function applyTransfers(
       throw new Error(`Player ${transfer.out} is not in squad`);
     }
 
+    const outgoingPlayer = getPlayer(outgoing.playerId, playersById);
+    const incoming = getPlayer(transfer.in, playersById);
+    if (incoming.elementType !== outgoingPlayer.elementType) {
+      throw new Error(`Transfer ${outgoing.playerId} -> ${incoming.id} changes position`);
+    }
+
     bank += outgoing.sellingPrice;
     squad = squad.filter(pick => pick.playerId !== transfer.out);
 
-    const incoming = getPlayer(transfer.in, playersById);
     if (squad.some(pick => pick.playerId === incoming.id)) {
       throw new Error(`Duplicate player ${incoming.id} in final squad`);
     }

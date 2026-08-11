@@ -3,7 +3,7 @@ import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
 import type { Decision, NewDecision, GameweekSnapshot, NewGameweekSnapshot } from './schema.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
-import { readFileSync, writeFileSync, existsSync, mkdirSync } from 'fs';
+import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import type { Fixture, Player } from '../api/types.js';
 import type { ExpectedPoints } from '../engine/optimizer.js';
 import type { PlayerNewsSignal } from '../scheduler/news-signals.js';
@@ -185,10 +185,63 @@ async function initDatabase(): Promise<SqlJsDatabase> {
       timestamp_verified INTEGER NOT NULL
     )
   `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS ml_shadow_forecast_runs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season TEXT NOT NULL,
+      gameweek INTEGER NOT NULL,
+      deadline_at INTEGER NOT NULL,
+      captured_at INTEGER NOT NULL,
+      completed_at INTEGER,
+      horizon INTEGER NOT NULL,
+      status TEXT NOT NULL,
+      heuristic_version TEXT NOT NULL,
+      model_version TEXT,
+      data_version TEXT,
+      schema_version TEXT,
+      artifact_sha256 TEXT,
+      feature_sidecar_sha256 TEXT,
+      feature_sidecar_path TEXT,
+      feature_cutoff_gameweek INTEGER,
+      error TEXT
+    )
+  `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS ml_shadow_player_forecasts (
+      run_id INTEGER NOT NULL,
+      player_id INTEGER NOT NULL,
+      fixture_count INTEGER NOT NULL,
+      coverage TEXT NOT NULL,
+      heuristic_points REAL NOT NULL,
+      heuristic_minutes_per_fixture REAL NOT NULL,
+      heuristic_minutes_gameweek REAL NOT NULL,
+      heuristic_confidence REAL NOT NULL,
+      ml_points REAL,
+      ml_expected_minutes REAL,
+      ml_appearance_probability REAL,
+      ml_start_probability REAL,
+      ml_direct_points REAL,
+      ml_conditional_points REAL,
+      ml_expected_appearances REAL,
+      ml_expected_starts REAL,
+      feature_payload_json TEXT,
+      actual_points INTEGER,
+      actual_minutes INTEGER,
+      actual_starts INTEGER,
+      PRIMARY KEY (run_id, player_id),
+      FOREIGN KEY (run_id) REFERENCES ml_shadow_forecast_runs(id)
+    )
+  `);
+  ensureColumn(sqlDb, 'ml_shadow_forecast_runs', 'completed_at', 'INTEGER');
+  ensureColumn(sqlDb, 'ml_shadow_forecast_runs', 'feature_sidecar_path', 'TEXT');
+  ensureColumn(sqlDb, 'ml_shadow_player_forecasts', 'ml_expected_appearances', 'REAL');
+  ensureColumn(sqlDb, 'ml_shadow_player_forecasts', 'ml_expected_starts', 'REAL');
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_observations_lookup ON player_observations(player_id, id)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_fixture_observations_lookup ON fixture_observations(fixture_id, id)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_forecasts_gameweek ON player_forecasts(gameweek, player_id, horizon)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_news_signals_gameweek ON player_news_signals(gameweek, player_id)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_ml_shadow_runs_lookup ON ml_shadow_forecast_runs(season, gameweek, deadline_at, captured_at)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_ml_shadow_forecasts_player ON ml_shadow_player_forecasts(player_id, run_id)`);
   
   dbReady = true;
   saveDatabase();
@@ -233,8 +286,20 @@ function saveDatabase(): void {
   if (sqlDb) {
     const data = sqlDb.export();
     const buffer = Buffer.from(data);
-    writeFileSync(DB_PATH, buffer);
+    const temporary = `${DB_PATH}.tmp`;
+    try {
+      writeFileSync(temporary, buffer);
+      renameSync(temporary, DB_PATH);
+    } finally {
+      if (existsSync(temporary)) unlinkSync(temporary);
+    }
   }
+}
+
+function ensureColumn(db: SqlJsDatabase, table: string, column: string, definition: string): void {
+  const columns = db.exec(`PRAGMA table_info(${table})`)[0]?.values ?? [];
+  if (columns.some(row => row[1] === column)) return;
+  db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
 // Decision CRUD operations
@@ -533,6 +598,370 @@ export async function getForecastAccuracy(gameweek?: number): Promise<{
     bias: errors.reduce((sum, error) => sum + error, 0) / errors.length,
     rootMeanSquaredError: Math.sqrt(errors.reduce((sum, error) => sum + error * error, 0) / errors.length),
   };
+}
+
+export type MlShadowCoverage = 'predicted' | 'no-fixture';
+
+export interface MlShadowPlayerForecastInput {
+  playerId: number;
+  fixtureCount: number;
+  coverage: MlShadowCoverage;
+  heuristicPoints: number;
+  heuristicMinutesPerFixture: number;
+  heuristicMinutesGameweek: number;
+  heuristicConfidence: number;
+  mlPoints: number | null;
+  mlExpectedMinutes: number | null;
+  mlAppearanceProbability: number | null;
+  mlStartProbability: number | null;
+  mlDirectPoints: number | null;
+  mlConditionalPoints: number | null;
+  mlExpectedAppearances: number | null;
+  mlExpectedStarts: number | null;
+  featurePayloadJson: string | null;
+}
+
+export interface MlShadowForecastRunInput {
+  season: string;
+  gameweek: number;
+  deadlineAt: Date;
+  capturedAt: Date;
+  completedAt: Date;
+  horizon: 1;
+  status: 'completed' | 'failed';
+  heuristicVersion: string;
+  modelVersion: string | null;
+  dataVersion: string | null;
+  schemaVersion: string | null;
+  artifactSha256: string | null;
+  featureSidecarSha256: string | null;
+  featureSidecarPath: string | null;
+  featureCutoffGameweek: number | null;
+  error: string | null;
+  forecasts: MlShadowPlayerForecastInput[];
+}
+
+export interface MlShadowForecastRunRecord {
+  id: number;
+  season: string;
+  gameweek: number;
+  deadlineAt: Date;
+  capturedAt: Date;
+  completedAt: Date | null;
+  status: 'completed' | 'failed';
+  modelVersion: string | null;
+  schemaVersion: string | null;
+  error: string | null;
+  playerCount: number;
+}
+
+export async function saveMlShadowForecastRun(input: MlShadowForecastRunInput): Promise<number> {
+  validateMlShadowForecastRun(input);
+  const db = await initDatabase();
+  let runId = 0;
+  db.run('BEGIN TRANSACTION');
+  try {
+    db.run(
+      `INSERT INTO ml_shadow_forecast_runs (
+        season, gameweek, deadline_at, captured_at, completed_at, horizon, status, heuristic_version,
+        model_version, data_version, schema_version, artifact_sha256, feature_sidecar_sha256,
+        feature_sidecar_path, feature_cutoff_gameweek, error
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [
+        input.season,
+        input.gameweek,
+        input.deadlineAt.getTime(),
+        input.capturedAt.getTime(),
+        input.completedAt.getTime(),
+        input.horizon,
+        input.status,
+        input.heuristicVersion,
+        input.modelVersion,
+        input.dataVersion,
+        input.schemaVersion,
+        input.artifactSha256,
+        input.featureSidecarSha256,
+        input.featureSidecarPath,
+        input.featureCutoffGameweek,
+        input.error,
+      ]
+    );
+    runId = Number(db.exec('SELECT last_insert_rowid()')[0]?.values[0]?.[0]);
+    if (!Number.isInteger(runId) || runId <= 0) throw new Error('Failed to obtain ML shadow run id');
+    const statement = db.prepare(`
+      INSERT INTO ml_shadow_player_forecasts (
+        run_id, player_id, fixture_count, coverage, heuristic_points,
+        heuristic_minutes_per_fixture, heuristic_minutes_gameweek, heuristic_confidence,
+        ml_points, ml_expected_minutes, ml_appearance_probability, ml_start_probability,
+        ml_direct_points, ml_conditional_points, feature_payload_json
+        , ml_expected_appearances, ml_expected_starts
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    try {
+      for (const forecast of input.forecasts) {
+        statement.run([
+          runId,
+          forecast.playerId,
+          forecast.fixtureCount,
+          forecast.coverage,
+          forecast.heuristicPoints,
+          forecast.heuristicMinutesPerFixture,
+          forecast.heuristicMinutesGameweek,
+          forecast.heuristicConfidence,
+          forecast.mlPoints,
+          forecast.mlExpectedMinutes,
+          forecast.mlAppearanceProbability,
+          forecast.mlStartProbability,
+          forecast.mlDirectPoints,
+          forecast.mlConditionalPoints,
+          forecast.featurePayloadJson,
+          forecast.mlExpectedAppearances,
+          forecast.mlExpectedStarts,
+        ]);
+      }
+    } finally {
+      statement.free();
+    }
+    db.run('COMMIT');
+  } catch (error) {
+    db.run('ROLLBACK');
+    throw error;
+  }
+  saveDatabase();
+  return runId;
+}
+
+export async function getMlShadowForecastRuns(
+  season?: string,
+  gameweek?: number
+): Promise<MlShadowForecastRunRecord[]> {
+  const db = await initDatabase();
+  const clauses: string[] = [];
+  const params: (string | number)[] = [];
+  if (season !== undefined) {
+    clauses.push('run.season = ?');
+    params.push(season);
+  }
+  if (gameweek !== undefined) {
+    clauses.push('run.gameweek = ?');
+    params.push(gameweek);
+  }
+  const where = clauses.length > 0 ? `WHERE ${clauses.join(' AND ')}` : '';
+  const result = db.exec(`
+    SELECT run.id, run.season, run.gameweek, run.deadline_at, run.captured_at, run.completed_at,
+      run.status, run.model_version, run.schema_version, run.error,
+      COUNT(forecast.player_id) AS player_count
+    FROM ml_shadow_forecast_runs run
+    LEFT JOIN ml_shadow_player_forecasts forecast ON forecast.run_id = run.id
+    ${where}
+    GROUP BY run.id
+    ORDER BY run.captured_at DESC, run.id DESC
+  `, params);
+  return (result[0]?.values ?? []).map(row => ({
+    id: Number(row[0]),
+    season: String(row[1]),
+    gameweek: Number(row[2]),
+    deadlineAt: new Date(Number(row[3])),
+    capturedAt: new Date(Number(row[4])),
+    completedAt: row[5] === null ? null : new Date(Number(row[5])),
+    status: String(row[6]) as MlShadowForecastRunRecord['status'],
+    modelVersion: row[7] === null ? null : String(row[7]),
+    schemaVersion: row[8] === null ? null : String(row[8]),
+    error: row[9] === null ? null : String(row[9]),
+    playerCount: Number(row[10]),
+  }));
+}
+
+export async function reconcileMlShadowForecastOutcomes(
+  season: string,
+  gameweek: number,
+  actuals: Map<number, { points: number; minutes: number; starts: number }>
+): Promise<number> {
+  const db = await initDatabase();
+  const runRows = db.exec(
+    `SELECT id FROM ml_shadow_forecast_runs
+     WHERE season = ? AND gameweek = ? AND status = 'completed' AND completed_at <= deadline_at`,
+    [season, gameweek]
+  )[0]?.values ?? [];
+  if (runRows.length === 0 || actuals.size === 0) return 0;
+  let updated = 0;
+  db.run('BEGIN TRANSACTION');
+  try {
+    const statement = db.prepare(`
+      UPDATE ml_shadow_player_forecasts
+      SET actual_points = ?, actual_minutes = ?, actual_starts = ?
+      WHERE run_id = ? AND player_id = ?
+    `);
+    try {
+      for (const row of runRows) {
+        const runId = Number(row[0]);
+        for (const [playerId, actual] of actuals) {
+          statement.run([actual.points, actual.minutes, actual.starts, runId, playerId]);
+          updated += db.getRowsModified();
+        }
+      }
+    } finally {
+      statement.free();
+    }
+    db.run('COMMIT');
+  } catch (error) {
+    db.run('ROLLBACK');
+    throw error;
+  }
+  if (updated > 0) saveDatabase();
+  return updated;
+}
+
+export async function getMlShadowForecastAccuracy(
+  season?: string,
+  gameweek?: number
+): Promise<{
+  samples: number;
+  heuristicMeanAbsoluteError: number;
+  mlMeanAbsoluteError: number;
+  mlBias: number;
+  mlRootMeanSquaredError: number;
+  mlWins: number;
+  ties: number;
+  heuristicWins: number;
+}> {
+  const db = await initDatabase();
+  const clauses = [
+    `run.status = 'completed'`,
+    'run.completed_at <= run.deadline_at',
+    `forecast.coverage = 'predicted'`,
+    'forecast.ml_points IS NOT NULL',
+    'forecast.actual_points IS NOT NULL',
+    `run.id = (
+      SELECT candidate.id FROM ml_shadow_forecast_runs candidate
+      WHERE candidate.season = run.season
+        AND candidate.gameweek = run.gameweek
+        AND candidate.status = 'completed'
+        AND candidate.completed_at <= candidate.deadline_at
+      ORDER BY candidate.completed_at DESC, candidate.id DESC
+      LIMIT 1
+    )`,
+  ];
+  const params: (string | number)[] = [];
+  if (season !== undefined) {
+    clauses.push('run.season = ?');
+    params.push(season);
+  }
+  if (gameweek !== undefined) {
+    clauses.push('run.gameweek = ?');
+    params.push(gameweek);
+  }
+  const result = db.exec(`
+    SELECT forecast.heuristic_points, forecast.ml_points, forecast.actual_points
+    FROM ml_shadow_player_forecasts forecast
+    INNER JOIN ml_shadow_forecast_runs run ON run.id = forecast.run_id
+    WHERE ${clauses.join(' AND ')}
+  `, params);
+  const rows = result[0]?.values ?? [];
+  if (rows.length === 0) {
+    return {
+      samples: 0,
+      heuristicMeanAbsoluteError: 0,
+      mlMeanAbsoluteError: 0,
+      mlBias: 0,
+      mlRootMeanSquaredError: 0,
+      mlWins: 0,
+      ties: 0,
+      heuristicWins: 0,
+    };
+  }
+  const errors = rows.map(row => {
+    const actual = Number(row[2]);
+    return {
+      heuristic: Number(row[0]) - actual,
+      ml: Number(row[1]) - actual,
+    };
+  });
+  let mlWins = 0;
+  let ties = 0;
+  let heuristicWins = 0;
+  for (const error of errors) {
+    const heuristicAbsolute = Math.abs(error.heuristic);
+    const mlAbsolute = Math.abs(error.ml);
+    if (mlAbsolute < heuristicAbsolute) mlWins += 1;
+    else if (mlAbsolute > heuristicAbsolute) heuristicWins += 1;
+    else ties += 1;
+  }
+  return {
+    samples: errors.length,
+    heuristicMeanAbsoluteError: errors.reduce((total, error) => total + Math.abs(error.heuristic), 0) / errors.length,
+    mlMeanAbsoluteError: errors.reduce((total, error) => total + Math.abs(error.ml), 0) / errors.length,
+    mlBias: errors.reduce((total, error) => total + error.ml, 0) / errors.length,
+    mlRootMeanSquaredError: Math.sqrt(errors.reduce((total, error) => total + error.ml * error.ml, 0) / errors.length),
+    mlWins,
+    ties,
+    heuristicWins,
+  };
+}
+
+function validateMlShadowForecastRun(input: MlShadowForecastRunInput): void {
+  if (!/^\d{4}-\d{4}$/.test(input.season)) throw new Error(`Invalid ML shadow season ${input.season}`);
+  if (!Number.isInteger(input.gameweek) || input.gameweek < 1 || input.gameweek > 38) {
+    throw new Error(`Invalid ML shadow gameweek ${input.gameweek}`);
+  }
+  if (
+    Number.isNaN(input.deadlineAt.getTime())
+    || Number.isNaN(input.capturedAt.getTime())
+    || Number.isNaN(input.completedAt.getTime())
+  ) {
+    throw new Error('Invalid ML shadow timestamps');
+  }
+  if (input.capturedAt > input.deadlineAt) throw new Error('ML shadow capture is after the deadline');
+  if (input.completedAt < input.capturedAt) throw new Error('ML shadow completion predates capture');
+  if (input.status === 'completed') {
+    if (input.completedAt > input.deadlineAt) throw new Error('Completed ML shadow run finished after the deadline');
+    if (
+      !input.modelVersion
+      || !input.schemaVersion
+      || !input.artifactSha256
+      || !input.featureSidecarSha256
+      || !input.featureSidecarPath
+    ) {
+      throw new Error('Completed ML shadow run is missing artifact provenance');
+    }
+    if (input.featureCutoffGameweek !== input.gameweek - 1) {
+      throw new Error('Completed ML shadow run has an invalid feature cutoff');
+    }
+    if (input.forecasts.length === 0) throw new Error('Completed ML shadow run has no forecasts');
+  } else if (!input.error || input.forecasts.length > 0) {
+    throw new Error('Failed ML shadow run must contain an error and no forecasts');
+  }
+  const players = new Set<number>();
+  for (const forecast of input.forecasts) {
+    if (!Number.isInteger(forecast.playerId) || forecast.playerId <= 0 || players.has(forecast.playerId)) {
+      throw new Error(`Invalid or duplicate ML shadow player ${forecast.playerId}`);
+    }
+    players.add(forecast.playerId);
+    if (!Number.isInteger(forecast.fixtureCount) || forecast.fixtureCount < 0) {
+      throw new Error(`Invalid ML shadow fixture count for player ${forecast.playerId}`);
+    }
+    if (forecast.coverage === 'predicted' && forecast.fixtureCount === 0) {
+      throw new Error(`Predicted ML shadow player ${forecast.playerId} has no fixtures`);
+    }
+    if (forecast.coverage === 'no-fixture' && (forecast.fixtureCount !== 0 || forecast.mlPoints !== null)) {
+      throw new Error(`No-fixture ML shadow player ${forecast.playerId} contains a prediction`);
+    }
+    const numbers = [
+      forecast.heuristicPoints,
+      forecast.heuristicMinutesPerFixture,
+      forecast.heuristicMinutesGameweek,
+      forecast.heuristicConfidence,
+      forecast.mlPoints,
+      forecast.mlExpectedMinutes,
+      forecast.mlAppearanceProbability,
+      forecast.mlStartProbability,
+      forecast.mlDirectPoints,
+      forecast.mlConditionalPoints,
+      forecast.mlExpectedAppearances,
+      forecast.mlExpectedStarts,
+    ].filter((value): value is number => value !== null);
+    if (!numbers.every(Number.isFinite)) throw new Error(`ML shadow player ${forecast.playerId} has non-finite values`);
+  }
 }
 
 function latestStates(db: SqlJsDatabase, table: string, idColumn: string): Map<number, string> {

@@ -19,9 +19,20 @@ AI-powered Fantasy Premier League assistant with game theory optimization.
 
 2. Add your credentials to `.env`:
    - `OPENAI_API_KEY`: Your OpenAI API key
-   - `FPL_EMAIL`: Your FPL login email
-   - `FPL_PASSWORD`: Your FPL password
-   - `FPL_MANAGER_ID`: Your manager ID (from team URL)
+   - `FPL_EMAIL`: Your Premier League account email
+   - `FPL_PASSWORD`: Your Premier League account password
+   - `FPL_MANAGER_ID`: Optional manager ID for read-only use
+
+### FPL Session
+
+The agent signs in through the current `account.premierleague.com` OAuth flow and stores
+the refreshable session in the gitignored `data/fpl-session.json` file. It validates the
+session against `/api/me/` at startup and derives the current season's manager ID from the
+account. `FPL_BEARER_TOKEN` can be used instead, but it must be the token stored by the
+Fantasy site rather than the general Premier League website.
+
+Without valid authentication the agent still runs in read-only mode, monitoring news,
+prices, and deadlines.
 
 3. Install dependencies:
    ```bash
@@ -56,6 +67,18 @@ Ask the agent questions like:
 - "What are the trending transfers?"
 - "When should I use my bench boost?"
 
+## Season Rules
+
+Live season rules are read from the game's own `bootstrap-static` payload rather than
+hardcoded: budget, squad and club limits, transfer cap, saved free transfer cap, and the
+per-chip windows. The runner prints the derived configuration at startup and warns when a
+value drifts from the static assumptions in `src/strategy/rules.ts`.
+
+For 2026/27 the game publishes wildcard GW2-19 and GW20-38, free hit GW2-19 and GW20-38,
+and bench boost / triple captain GW1-19 and GW20-38 — so no wildcard or free hit is legal
+in GW1. In-season free transfer grants are not published in bootstrap; set
+`FPL_TRANSFER_TOP_UPS="16:5"` if the game announces one.
+
 ## FPL Rules (2025/26)
 
 - Squad: 15 players, 2 GKP / 5 DEF / 5 MID / 3 FWD
@@ -77,4 +100,44 @@ npm run backtest:prepare -- --season=2025-2026 --data-mode=reconstructed
 npm run backtest:run -- --strategy=autonomous --season=2025-2026 --data-mode=reconstructed
 ```
 
+Use the full deployment-shadow profile to exercise six-gameweek transfer planning,
+lineup and bench selection, captaincy, chips, hits, saved transfers, and the final
+pre-deadline execution decision for every gameweek:
+
+```bash
+npm run backtest:full -- --season=2025-2026 --data-mode=reconstructed
+```
+
+The deployment replay is local-only and cannot call authenticated FPL endpoints. Its
+report records the execution profile and every weekly decision. Reconstructed historical
+data has no trustworthy timestamped injury/news archive or intraweek polling snapshots,
+so those live behaviors are disclosed as unavailable rather than simulated with hindsight.
+
 Reconstructed fixtures come from the final season schedule, so these reports cannot verify top-10k performance. `--data-mode=strict` intentionally fails until point-in-time fixture snapshots are available. Use `--data-mode=legacy` only for diagnostic comparison with older reports.
+
+## Identity-Independent ML
+
+The local player-fixture model fits reusable schedule, position, team, and
+rolling-performance patterns without fitting player, club, opponent, or fixture
+identity. Training uses 2023/24, blend and deployment-policy selection use
+2024/25, and 2025/26 is a diagnostic out-of-season replay.
+
+```bash
+python3 -m venv .venv-ml
+. .venv-ml/bin/activate
+python -m pip install -r requirements-ml.txt
+python scripts/ml/pipeline.py all --overwrite
+npm run ml:calibrate-policy
+npm run backtest:ml
+```
+
+The portable model is emitted at
+`artifacts/ml/player-fixture-v1/model.json`; historical datasets and replay
+prediction CSVs remain local generated inputs under `data/`.
+
+For live observation, generate a public-data feature sidecar with
+`npm run ml:live-features`, set `FPL_ML_SHADOW_ENABLED=true` and point
+`FPL_ML_FEATURE_SIDECAR` at the printed file. ML remains a separate shadow
+observer: it does not alter optimizer projections, transfer plans, lineups,
+captaincy, chips, or authenticated API payloads. See `scripts/ml/README.md`
+for the feature contract, artifacts, validation results, and weekly workflow.

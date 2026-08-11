@@ -12,9 +12,25 @@ import type {
   FPLSession,
   Pick,
 } from './types.js';
+import { getValidTokens } from './auth.js';
 
 const FPL_BASE_URL = 'https://fantasy.premierleague.com/api';
-const FPL_LOGIN_URL = 'https://users.premierleague.com/accounts/login/';
+
+export const SESSION_SETUP_INSTRUCTIONS = [
+  'FPL authentication is not configured. Set FPL_EMAIL and FPL_PASSWORD in .env.',
+  'Alternatively, set FPL_BEARER_TOKEN to the access token stored by the Fantasy site.',
+].join('\n');
+
+export class FPLAuthError extends Error {
+  constructor(message: string, readonly status?: number) {
+    super(message);
+    this.name = 'FPLAuthError';
+  }
+}
+
+export type AuthResult =
+  | { authenticated: true; managerId: number }
+  | { authenticated: false; reason: string };
 
 interface FetchOptions {
   method?: 'GET' | 'POST';
@@ -40,99 +56,87 @@ class FPLClient {
   private session: FPLSession | null = null;
   private bootstrapCache: { data: BootstrapStatic; timestamp: number } | null = null;
   private readonly CACHE_TTL = 60 * 60 * 1000; // 1 hour
+  private lastAuthFailure: { at: Date; message: string } | null = null;
 
   constructor(
-    private email?: string,
-    private password?: string,
+    private cookie?: string,
+    private bearerToken?: string,
     private managerId?: number
   ) {}
 
-  // Authentication
-  async login(): Promise<boolean> {
-    if (!this.email || !this.password) {
-      throw new Error('Email and password required for authentication');
-    }
+  /**
+   * Establish a session from a browser-captured cookie (and optional API token),
+   * then confirm it against /me/ so an expired session fails immediately instead
+   * of at the deadline.
+   */
+  async authenticate(): Promise<AuthResult> {
+    const cookie = this.cookie ?? process.env.FPL_COOKIE ?? process.env.FPL_SESSION_COOKIE;
+    let bearerToken = this.bearerToken ?? process.env.FPL_BEARER_TOKEN;
 
-    try {
-      // Step 1: Get initial cookies and CSRF token
-      const loginPageRes = await fetch(FPL_LOGIN_URL, {
-        method: 'GET',
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        },
-      });
-
-      // Properly collect ALL set-cookie headers (Node.js fetch quirk)
-      const initialCookies = loginPageRes.headers.getSetCookie?.() || [];
-      const initialCookieStr = initialCookies.join('; ');
-      const csrfMatch = initialCookieStr.match(/csrftoken=([^;]+)/);
-      const csrfToken = csrfMatch ? csrfMatch[1] : '';
-
-      // Build cookie header from individual cookie key=value pairs
-      const parseCookiePairs = (cookieHeaders: string[]): string => {
-        return cookieHeaders
-          .map(c => c.split(';')[0].trim()) // Extract just the key=value part
-          .filter(Boolean)
-          .join('; ');
-      };
-
-      const initialCookieHeader = parseCookiePairs(initialCookies);
-
-      // Step 2: Submit login form
-      const formData = new URLSearchParams({
-        login: this.email,
-        password: this.password,
-        app: 'plfpl-web',
-        redirect_uri: 'https://fantasy.premierleague.com/',
-      });
-
-      const loginRes = await fetch(FPL_LOGIN_URL, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/x-www-form-urlencoded',
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Cookie: initialCookieHeader,
-          Referer: FPL_LOGIN_URL,
-          'X-CSRFToken': csrfToken,
-        },
-        body: formData.toString(),
-        redirect: 'manual',
-      });
-
-      // Collect ALL session cookies from login response
-      const loginCookies = loginRes.headers.getSetCookie?.() || [];
-      const allCookieHeaders = [...initialCookies, ...loginCookies];
-      const sessionCookieHeader = parseCookiePairs(allCookieHeaders);
-      const fullCookieStr = allCookieHeaders.join('; ');
-      
-      if (loginRes.status === 302 || fullCookieStr.includes('pl_profile')) {
-        this.session = {
-          cookies: sessionCookieHeader,
-          csrfToken,
-          managerId: this.managerId || 0,
-        };
-
-        // Get manager ID if not provided
-        if (!this.managerId) {
-          const me = await this.getMe();
-          if (me) {
-            this.session.managerId = me.player.entry;
-            this.managerId = me.player.entry;
-          }
-        }
-
-        return true;
+    if (!cookie && !bearerToken) {
+      try {
+        bearerToken = (await getValidTokens())?.accessToken;
+      } catch (error) {
+        const reason = error instanceof Error ? error.message : 'FPL login failed';
+        this.lastAuthFailure = { at: new Date(), message: reason };
+        return { authenticated: false, reason };
       }
-
-      return false;
-    } catch (error) {
-      console.error('Login failed:', error);
-      return false;
     }
+
+    if (!cookie && !bearerToken) {
+      return { authenticated: false, reason: SESSION_SETUP_INSTRUCTIONS };
+    }
+
+    const normalizedCookie = (cookie ?? '')
+      .split(';')
+      .map(part => part.trim())
+      .filter(Boolean)
+      .join('; ');
+
+    this.session = {
+      cookies: normalizedCookie,
+      csrfToken: normalizedCookie.match(/csrftoken=([^;]+)/)?.[1] ?? '',
+      managerId: this.managerId ?? 0,
+      bearerToken,
+    };
+
+    let me: Awaited<ReturnType<FPLClient['getMe']>> | null = null;
+    try {
+      me = await this.getMe();
+    } catch (error) {
+      this.session = null;
+      const reason = error instanceof Error ? error.message : 'Session validation failed';
+      this.lastAuthFailure = { at: new Date(), message: reason };
+      return { authenticated: false, reason };
+    }
+
+    // An unauthenticated request still returns 200 with a null player, so the
+    // payload is the only reliable signal that the session actually works.
+    if (!me?.player?.entry) {
+      this.session = null;
+      const reason = `FPL session is invalid or expired.\n${SESSION_SETUP_INSTRUCTIONS}`;
+      this.lastAuthFailure = { at: new Date(), message: reason };
+      return { authenticated: false, reason };
+    }
+
+    if (this.managerId && this.managerId !== me.player.entry) {
+      console.warn(
+        `[AUTH] FPL_MANAGER_ID ${this.managerId} is stale; using authenticated current-season entry ${me.player.entry}.`
+      );
+    }
+    this.managerId = me.player.entry;
+    this.session.managerId = this.managerId;
+    this.lastAuthFailure = null;
+
+    return { authenticated: true, managerId: this.managerId };
   }
 
   isAuthenticated(): boolean {
     return this.session !== null;
+  }
+
+  getLastAuthFailure(): { at: Date; message: string } | null {
+    return this.lastAuthFailure;
   }
 
   private async fetch<T>(endpoint: string, options: FetchOptions = {}): Promise<T> {
@@ -145,10 +149,16 @@ class FPLClient {
 
     if (options.requiresAuth) {
       if (!this.session) {
-        throw new Error('Authentication required. Call login() first.');
+        throw new FPLAuthError(`Authentication required. Call authenticate() first.\n${SESSION_SETUP_INSTRUCTIONS}`);
       }
-      headers.Cookie = this.session.cookies;
-      headers['X-CSRFToken'] = this.session.csrfToken;
+      if (this.session.cookies) headers.Cookie = this.session.cookies;
+      if (this.session.csrfToken) headers['X-CSRFToken'] = this.session.csrfToken;
+      // Newer FPL clients carry the account token alongside the session cookie.
+      if (this.session.bearerToken) {
+        headers['X-Api-Authorization'] = `Bearer ${this.session.bearerToken}`;
+      }
+      headers.Referer = 'https://fantasy.premierleague.com/';
+      headers.Origin = 'https://fantasy.premierleague.com';
     }
 
     if (options.method === 'POST' && options.body) {
@@ -163,6 +173,13 @@ class FPLClient {
     });
 
     if (!response.ok) {
+      if (options.requiresAuth && (response.status === 401 || response.status === 403)) {
+        // Keep the session in place: FPL returns transient 403s, and callers already
+        // retry. Record the failure so the runner can alert on a genuinely dead session.
+        const message = `FPL rejected an authenticated request (${response.status}). The session may have expired.\n${SESSION_SETUP_INSTRUCTIONS}`;
+        this.lastAuthFailure = { at: new Date(), message };
+        throw new FPLAuthError(message, response.status);
+      }
       throw new Error(`FPL API error: ${response.status} ${response.statusText}`);
     }
 
@@ -215,12 +232,8 @@ class FPLClient {
 
   // Authenticated Endpoints
 
-  async getMe(): Promise<{ player: { entry: number } } | null> {
-    try {
-      return await this.fetch<{ player: { entry: number } }>('/me/', { requiresAuth: true });
-    } catch {
-      return null;
-    }
+  async getMe(): Promise<{ player: { entry: number } | null }> {
+    return this.fetch<{ player: { entry: number } | null }>('/me/', { requiresAuth: true });
   }
 
   async getMyTeam(): Promise<MyTeam> {
@@ -354,11 +367,25 @@ class FPLClient {
 // Singleton instance
 let clientInstance: FPLClient | null = null;
 
-export function getFPLClient(email?: string, password?: string, managerId?: number): FPLClient {
+export interface FPLClientOptions {
+  cookie?: string;
+  bearerToken?: string;
+  managerId?: number;
+}
+
+export function getFPLClient(options: FPLClientOptions = {}): FPLClient {
   if (!clientInstance) {
-    clientInstance = new FPLClient(email, password, managerId);
+    clientInstance = new FPLClient(options.cookie, options.bearerToken, options.managerId);
   }
   return clientInstance;
+}
+
+export function getFPLClientFromEnv(): FPLClient {
+  return getFPLClient({
+    cookie: process.env.FPL_COOKIE ?? process.env.FPL_SESSION_COOKIE,
+    bearerToken: process.env.FPL_BEARER_TOKEN,
+    managerId: process.env.FPL_MANAGER_ID ? parseInt(process.env.FPL_MANAGER_ID) : undefined,
+  });
 }
 
 export function resetFPLClient(): void {

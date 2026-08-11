@@ -1,7 +1,15 @@
 import type { ChipName } from '../strategy/rules.js';
-import type { GameweekSnapshot, ManagerState, ReplayDataMode, SnapshotProvenance, WeeklyResult } from './types.js';
+import type {
+  BacktestDecision,
+  GameweekSnapshot,
+  ManagerState,
+  ReplayDataMode,
+  ReplayExecutionProfile,
+  SnapshotProvenance,
+  WeeklyResult,
+} from './types.js';
 
-export type BacktestStrategyName = 'baseline' | 'fair' | 'autonomous' | 'oracle';
+export type BacktestStrategyName = 'baseline' | 'fair' | 'autonomous' | 'deployment' | 'deployment-ml' | 'oracle';
 
 export interface TransferReportRow {
   gameweek: number;
@@ -12,7 +20,8 @@ export interface TransferReportRow {
 export interface ChipReportRow {
   gameweek: number;
   chip: ChipName;
-  points: number;
+  gameweekPoints: number;
+  incrementalPoints: number | null;
 }
 
 export interface BacktestReport {
@@ -22,13 +31,17 @@ export interface BacktestReport {
   rulesVersion: string;
   integrityWarning: string | null;
   totalPoints: number;
+  grossPointsTotal: number;
+  transferCostTotal: number;
   captainPointsTotal: number;
   benchPointsTotal: number;
   estimatedRankPercentile: number | null;
   top10kCutoff: number | null;
   pointsVsTop10k: number | null;
   metTop10kBenchmark: boolean | null;
+  executionProfile: ReplayExecutionProfile | null;
   weekly: WeeklyResult[];
+  decisions: BacktestDecision[];
   weeklyBenchmark: WeeklyBenchmarkRow[];
   averageTotal: number;
   pointsAboveAverage: number;
@@ -39,6 +52,8 @@ export interface BacktestReport {
   chips: ChipReportRow[];
   finalSquad: number[];
   finalBank: number;
+  finalFreeTransfers: number;
+  finalChipsAvailable: ChipName[];
   finalSquadValue: number;
   provenance: SnapshotProvenance;
 }
@@ -59,6 +74,7 @@ export function buildBacktestReport(
   strategy: BacktestStrategyName = 'baseline',
   snapshots: GameweekSnapshot[] = [],
   top10kCutoff?: number,
+  executionProfile?: ReplayExecutionProfile,
 ): BacktestReport {
   const integrityWarning = getIntegrityWarning(provenance.dataMode);
   const verifiedTop10kCutoff = provenance.dataMode === 'strict' ? top10kCutoff : undefined;
@@ -69,7 +85,12 @@ export function buildBacktestReport(
   })));
   const chips = state.weeklyResults
     .filter(result => result.chip)
-    .map(result => ({ gameweek: result.gameweek, chip: result.chip as ChipName, points: result.points }));
+    .map(result => ({
+      gameweek: result.gameweek,
+      chip: result.chip as ChipName,
+      gameweekPoints: result.points,
+      incrementalPoints: result.chipGain ?? null,
+    }));
   const lastWeek = state.weeklyResults[state.weeklyResults.length - 1];
   const finalSquadValue = lastWeek?.chip === 'freehit'
     ? state.squad.reduce((total, pick) => total + pick.sellingPrice, state.bank)
@@ -99,6 +120,8 @@ export function buildBacktestReport(
     rulesVersion: provenance.rulesVersion,
     integrityWarning,
     totalPoints: state.totalPoints,
+    grossPointsTotal: state.weeklyResults.reduce((total, result) => total + result.grossPoints, 0),
+    transferCostTotal: state.weeklyResults.reduce((total, result) => total + result.transferCost, 0),
     captainPointsTotal: state.weeklyResults.reduce((total, result) => total + result.captainPoints, 0),
     benchPointsTotal: state.weeklyResults.reduce((total, result) => total + result.benchPoints, 0),
     estimatedRankPercentile: null,
@@ -107,7 +130,9 @@ export function buildBacktestReport(
     metTop10kBenchmark: verifiedTop10kCutoff === undefined
       ? null
       : state.totalPoints >= verifiedTop10kCutoff,
+    executionProfile: executionProfile ?? null,
     weekly: state.weeklyResults,
+    decisions: state.decisions,
     weeklyBenchmark,
     averageTotal: cumulativeAverage,
     pointsAboveAverage: cumulativePoints - cumulativeAverage,
@@ -118,6 +143,8 @@ export function buildBacktestReport(
     chips,
     finalSquad: state.squad.map(pick => pick.playerId),
     finalBank: state.bank,
+    finalFreeTransfers: state.freeTransfers,
+    finalChipsAvailable: [...state.chipsAvailable],
     finalSquadValue,
     provenance,
   };
@@ -132,8 +159,14 @@ export function formatBacktestSummary(report: BacktestReport): string {
     `Strategy: ${report.strategy}`,
     `Data mode: ${report.dataMode}`,
     `Rules version: ${report.rulesVersion}`,
+    ...(report.executionProfile ? [
+      `Execution profile: ${report.executionProfile.name}`,
+      `Planner horizon: ${report.executionProfile.planningHorizonGameweeks} gameweeks`,
+    ] : []),
     ...(report.integrityWarning ? [`Integrity warning: ${report.integrityWarning}`] : []),
     `Total points: ${report.totalPoints}`,
+    `Gross points: ${report.grossPointsTotal}`,
+    `Transfer hit cost: ${report.transferCostTotal}`,
     `FPL average total: ${report.averageTotal}`,
     `Points vs average: ${report.pointsAboveAverage >= 0 ? '+' : ''}${report.pointsAboveAverage}`,
     `GW record vs average: ${report.gameweeksAboveAverage}W-${report.gameweeksLevelWithAverage}D-${report.gameweeksBelowAverage}L`,

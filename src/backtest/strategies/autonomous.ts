@@ -128,7 +128,7 @@ function rebuildDecision(
   const captaincy = selectCaptaincy(lineup.startingXi, playersById);
   return {
     gameweek,
-    transfers: replacementTransfers(currentIds, rebuiltIds),
+    transfers: replacementTransfers(currentIds, rebuiltIds, playersById),
     startingXi: lineup.startingXi,
     bench: lineup.bench,
     captain: captaincy.captain,

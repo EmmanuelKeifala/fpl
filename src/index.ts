@@ -3,7 +3,7 @@ import 'dotenv/config';
 import { run } from '@openai/agents';
 import * as readline from 'readline';
 import { fplAgent } from './agent.js';
-import { getFPLClient } from './api/client.js';
+import { getFPLClientFromEnv } from './api/client.js';
 import { getOptimizationEngine } from './engine/optimizer.js';
 import { syncGameweekData } from './db/sync.js';
 
@@ -70,21 +70,17 @@ async function initializeAgent(): Promise<void> {
   
   // Initialize FPL client
   const managerId = process.env.FPL_MANAGER_ID ? parseInt(process.env.FPL_MANAGER_ID) : undefined;
-  const client = getFPLClient(
-    process.env.FPL_EMAIL,
-    process.env.FPL_PASSWORD,
-    managerId
-  );
-  
-  // Try to authenticate if credentials provided
-  if (process.env.FPL_EMAIL && process.env.FPL_PASSWORD) {
-    console.log(`${colors.dim}Authenticating with FPL...${colors.reset}`);
+  const client = getFPLClientFromEnv();
+
+  // Try to authenticate if a browser session was captured
+  if (process.env.FPL_COOKIE || process.env.FPL_SESSION_COOKIE || process.env.FPL_BEARER_TOKEN) {
+    console.log(`${colors.dim}Validating FPL session...${colors.reset}`);
     try {
-      const success = await client.login();
-      if (success) {
-        console.log(`${colors.green}Authenticated successfully!${colors.reset}`);
+      const auth = await client.authenticate();
+      if (auth.authenticated) {
+        console.log(`${colors.green}Authenticated as manager ${auth.managerId}.${colors.reset}`);
       } else {
-        console.log(`${colors.yellow}Authentication failed. Some features will be limited.${colors.reset}`);
+        console.log(`${colors.yellow}${auth.reason}${colors.reset}`);
       }
     } catch (error) {
       console.log(`${colors.yellow}Authentication error. Continuing in read-only mode.${colors.reset}`);
@@ -92,7 +88,7 @@ async function initializeAgent(): Promise<void> {
   } else if (managerId) {
     console.log(`${colors.dim}Using manager ID: ${managerId} (read-only mode)${colors.reset}`);
   } else {
-    console.log(`${colors.yellow}No FPL credentials provided. Set FPL_MANAGER_ID for basic features.${colors.reset}`);
+    console.log(`${colors.yellow}No FPL session provided. Set FPL_MANAGER_ID for basic features, FPL_COOKIE for team actions.${colors.reset}`);
   }
   
   // Pre-load optimization engine data

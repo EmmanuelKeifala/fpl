@@ -2,13 +2,19 @@ import { getFPLClient } from '../api/client.js';
 import {
   isForecastSnapshotDue,
   getForecastAccuracy,
+  getMlShadowForecastAccuracy,
+  reconcileMlShadowForecastOutcomes,
   reconcileForecastOutcomes,
   saveForecastSnapshot,
   saveIntelligenceObservations,
 } from '../db/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
+import type { MlShadowCaptureInput } from '../ml/shadow-forecasts.js';
 
-export async function captureLearningSnapshot(gameweek: number, forceForecast: boolean): Promise<void> {
+export async function captureLearningSnapshot(
+  gameweek: number,
+  forceForecast: boolean
+): Promise<MlShadowCaptureInput | null> {
   const engine = await getOptimizationEngine();
   const observed = await saveIntelligenceObservations(
     gameweek,
@@ -20,10 +26,15 @@ export async function captureLearningSnapshot(gameweek: number, forceForecast: b
     console.log(`[LEARNING] Stored ${observed.players} player and ${observed.fixtures} fixture changes.`);
   }
 
-  if (!await isForecastSnapshotDue(gameweek, 1, forceForecast)) return;
+  const capturedAt = new Date();
+  if (!await isForecastSnapshotDue(gameweek, 1, forceForecast, capturedAt)) return null;
   const forecasts = engine.getAllPlayers().map(player => engine.calculateExpectedPoints(player.id, 1));
-  const saved = await saveForecastSnapshot(gameweek, 1, forecasts, forceForecast);
-  if (saved > 0) console.log(`[LEARNING] Stored ${saved} pre-deadline player forecasts for GW${gameweek}.`);
+  const saved = await saveForecastSnapshot(gameweek, 1, forecasts, forceForecast, capturedAt);
+  if (saved > 0) {
+    console.log(`[LEARNING] Stored ${saved} pre-deadline player forecasts for GW${gameweek}.`);
+    return { gameweek, capturedAt, heuristicForecasts: forecasts, engine };
+  }
+  return null;
 }
 
 export async function reconcileFinishedGameweek(gameweek: number): Promise<void> {
@@ -36,6 +47,25 @@ export async function reconcileFinishedGameweek(gameweek: number): Promise<void>
     console.log(
       `[LEARNING] GW${gameweek} forecast MAE ${accuracy.meanAbsoluteError.toFixed(2)}, ` +
       `bias ${accuracy.bias.toFixed(2)}, RMSE ${accuracy.rootMeanSquaredError.toFixed(2)} (${accuracy.samples} players).`
+    );
+  }
+  const engine = await getOptimizationEngine();
+  const actuals = new Map(live.elements.map(element => [element.id, {
+    points: element.stats.total_points,
+    minutes: element.stats.minutes,
+    starts: element.stats.starts,
+  }]));
+  const mlUpdated = await reconcileMlShadowForecastOutcomes(
+    engine.getSeasonConfig().season,
+    gameweek,
+    actuals
+  );
+  if (mlUpdated > 0) {
+    const mlAccuracy = await getMlShadowForecastAccuracy(engine.getSeasonConfig().season, gameweek);
+    console.log(
+      `[ML SHADOW] GW${gameweek} ML MAE ${mlAccuracy.mlMeanAbsoluteError.toFixed(2)} vs ` +
+      `heuristic ${mlAccuracy.heuristicMeanAbsoluteError.toFixed(2)} ` +
+      `(${mlAccuracy.mlWins}W-${mlAccuracy.ties}D-${mlAccuracy.heuristicWins}L, ${mlAccuracy.samples} players).`
     );
   }
 }

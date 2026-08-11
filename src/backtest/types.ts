@@ -18,6 +18,13 @@ export interface BacktestPlayer {
   status: string;
   selectedByPercent: number;
   expectedPoints: number;
+  mlPrediction?: {
+    modelVersion: string;
+    appearanceProbability: number;
+    startProbability: number;
+    expectedMinutes: number;
+    fixtureCount: number;
+  };
   forecastProvenance: ForecastProvenance;
 }
 
@@ -86,7 +93,28 @@ export interface BacktestDecision {
   viceCaptain: number;
   chip?: ChipName;
   expectedUtility?: number;
+  execution?: {
+    phase: 'execute';
+    freeTransfersBefore: number;
+    bankBefore: number;
+    projectedHitCost: number;
+  };
   notes: string[];
+}
+
+export interface ReplayExecutionProfile {
+  name: string;
+  decisionTiming: 'final-pre-deadline';
+  planningHorizonGameweeks: number;
+  maxTransfersPerGameweek: number;
+  minXPGainForHit: number;
+  transfersEnabled: boolean;
+  lineupEnabled: boolean;
+  chipsEnabled: boolean;
+  liveAccountMutations: false;
+  historicalNews: 'unavailable';
+  historicalLearning: 'revealed-results-only';
+  limitations: string[];
 }
 
 export interface WeeklyResult {
@@ -97,6 +125,7 @@ export interface WeeklyResult {
   captainPoints: number;
   benchPoints: number;
   chip?: ChipName;
+  chipGain?: number;
   squadValue: number;
   bank: number;
 }

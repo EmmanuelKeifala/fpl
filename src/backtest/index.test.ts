@@ -54,6 +54,13 @@ test('parseRunOptions accepts fair and oracle strategies with explicit season', 
   assert.deepEqual(parseRunOptions(['--strategy=oracle', '--season=2023-2024']), { strategy: 'oracle', season: '2023-2024' });
 });
 
+test('parseRunOptions accepts identity-independent ML deployment replay', () => {
+  assert.deepEqual(parseRunOptions(['--strategy=deployment-ml', '--season=2025-2026']), {
+    strategy: 'deployment-ml',
+    season: '2025-2026',
+  });
+});
+
 test('parseRunOptions rejects malformed seasons', () => {
   assert.throws(() => parseRunOptions(['--season=2023-24']), /invalid season/i);
   assert.throws(() => parseRunOptions(['--season=2023-2025']), /invalid season/i);

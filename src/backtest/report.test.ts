@@ -42,7 +42,7 @@ test('buildBacktestReport includes season metrics and provenance', () => {
   assert.equal(report.estimatedRankPercentile, null);
   assert.equal(report.weekly.length, 2);
   assert.equal(report.transfers.length, 1);
-  assert.deepEqual(report.chips, [{ gameweek: 2, chip: '3xc', points: 40 }]);
+  assert.deepEqual(report.chips, [{ gameweek: 2, chip: '3xc', gameweekPoints: 40, incrementalPoints: null }]);
   assert.equal(report.finalSquadValue, 1002);
   assert.equal(report.provenance.snapshotVersion, '2024-2025-v1');
 });

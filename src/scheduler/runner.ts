@@ -1,9 +1,11 @@
 // Autonomous Runner - Main entry point for autonomous FPL decision making
 import 'dotenv/config';
-import { getFPLClient } from '../api/client.js';
+import { getFPLClient, getFPLClientFromEnv } from '../api/client.js';
+import { describeSeasonConfig, getSeasonConfigWarnings } from '../strategy/season.js';
 import { getOptimizationEngine, resetOptimizationEngine } from '../engine/optimizer.js';
-import { 
-  buildDecisionContext, 
+import {
+  buildDecisionContext,
+  gatherIntelligence,
   optimizeTransferPlan,
   selectOptimalCaptain, 
   selectOptimalLineup,
@@ -29,6 +31,7 @@ import {
 import { getGameweekSnapshot, logDecision, saveGameweekSnapshot } from '../db/client.js';
 import type { GameweekHistory, ChipUsage } from '../api/types.js';
 import { captureLearningSnapshot, reconcileFinishedGameweek } from './learning.js';
+import { captureMlShadowForecasts } from '../ml/shadow-forecasts.js';
 
 type RunnerPhase = 'monitor' | 'plan' | 'execute' | 'post-deadline';
 
@@ -81,29 +84,50 @@ async function initialize(): Promise<boolean> {
   }
   
   try {
-    const client = getFPLClient(
-      process.env.FPL_EMAIL,
-      process.env.FPL_PASSWORD,
-      process.env.FPL_MANAGER_ID ? parseInt(process.env.FPL_MANAGER_ID) : undefined
-    );
-    const isAuth = await client.login();
-    
-    if (!isAuth) {
-      console.error('[RUNNER] Failed to authenticate with FPL. Exiting.');
-      return false;
+    const client = getFPLClientFromEnv();
+    const auth = await client.authenticate();
+
+    if (auth.authenticated) {
+      console.log(`[RUNNER] Authenticated as manager ${auth.managerId}.\n`);
+    } else {
+      // Without a session the agent can still project, plan, and alert; it simply
+      // cannot mutate the team. Exiting here would leave the season unmonitored.
+      console.error(`[RUNNER] Not authenticated. Continuing in read-only mode.\n${auth.reason}\n`);
+      await notifyAlert('FPL Session Unavailable', auth.reason);
     }
-    
-    console.log('[RUNNER] Authentication successful.\n');
-    
+
     // Initialize optimizer
-    await getOptimizationEngine();
-    console.log('[RUNNER] Optimization engine initialized.\n');
-    
+    const engine = await getOptimizationEngine();
+    console.log('[RUNNER] Optimization engine initialized.');
+
+    const seasonConfig = engine.getSeasonConfig();
+    for (const line of describeSeasonConfig(seasonConfig)) console.log(`  ${line}`);
+    for (const warning of getSeasonConfigWarnings(seasonConfig)) {
+      console.warn(`[RULES] ${warning}`);
+    }
+    console.log('');
+
     return true;
   } catch (error) {
     console.error('[RUNNER] Initialization failed:', error);
     return false;
   }
+}
+
+// Re-establish the session mid-season when a captured cookie expires.
+async function ensureSession(): Promise<boolean> {
+  const client = getFPLClient();
+  if (client.isAuthenticated() && !client.getLastAuthFailure()) return true;
+
+  const auth = await client.authenticate();
+  if (auth.authenticated) {
+    console.log('[AUTH] Session re-validated.');
+    return true;
+  }
+
+  console.error(`[AUTH] Session unavailable: ${auth.reason}`);
+  await notifyAlert('FPL Session Expired', auth.reason);
+  return false;
 }
 
 async function refreshData(): Promise<void> {
@@ -340,6 +364,51 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
   }
 }
 
+// Team-independent monitoring used when no session is available. Player news and
+// deadlines still get tracked so the season is never running blind.
+async function runReadOnlyCycle(): Promise<void> {
+  console.log('\n=== READ-ONLY CYCLE (no FPL session) ===\n');
+
+  const engine = await getOptimizationEngine();
+  const deadline = engine.getNextDeadline();
+  if (deadline) {
+    console.log(`[STATUS] Next deadline: GW${deadline.gameweek} in ${deadline.hoursRemaining.toFixed(1)}h`);
+  } else {
+    console.log('[STATUS] No upcoming deadline found.');
+  }
+
+  const latestFinishedGameweek = engine.getGameweeks()
+    .filter(gameweek => gameweek.finished)
+    .sort((a, b) => b.id - a.id)[0];
+  if (latestFinishedGameweek && latestFinishedGameweek.id > runnerState.lastGWProcessed) {
+    try {
+      await reconcileFinishedGameweek(latestFinishedGameweek.id);
+      runnerState.lastGWProcessed = latestFinishedGameweek.id;
+    } catch (error) {
+      console.error(`[LEARNING] Failed to reconcile GW${latestFinishedGameweek.id} forecasts:`, error);
+    }
+  }
+
+  const intelligence = await gatherIntelligence(deadline?.gameweek, deadline?.deadline);
+  if (intelligence.statusChanges.length > 0) {
+    console.log(`[INTELLIGENCE] ${intelligence.statusChanges.length} player status change(s):`);
+    for (const change of intelligence.statusChanges.slice(0, 10)) {
+      console.log(`  - ${change.player.web_name}: ${change.oldStatus} -> ${change.newStatus}`);
+    }
+  }
+  for (const alert of intelligence.newsAlerts.slice(0, 5)) console.log(`  - ${alert}`);
+
+  if (deadline) {
+    const shadowCapture = await captureLearningSnapshot(
+      deadline.gameweek,
+      deadline.hoursRemaining <= PRE_DEADLINE_HOURS
+    );
+    if (shadowCapture) await captureMlShadowForecasts(shadowCapture);
+  }
+
+  console.log('[READ-ONLY] Team actions are unavailable until a valid FPL session is configured.\n');
+}
+
 async function runPostDeadline(context: DecisionContext): Promise<void> {
   console.log('\n=== POST-DEADLINE ===\n');
   
@@ -351,6 +420,11 @@ async function runPostDeadline(context: DecisionContext): Promise<void> {
 
   const existingSnapshot = await getGameweekSnapshot(context.gameweek);
   if (existingSnapshot) {
+    try {
+      await reconcileFinishedGameweek(context.gameweek);
+    } catch (error) {
+      console.error(`[LEARNING] Failed to reconcile GW${context.gameweek} forecasts:`, error);
+    }
     runnerState.lastGWProcessed = context.gameweek;
     console.log('[POST] Snapshot already exists for this gameweek.\n');
     return;
@@ -417,14 +491,18 @@ async function runCycle(): Promise<void> {
     await refreshData();
     
     // Get decision context
-    const context = await buildDecisionContext();
-    
+    const authenticated = await ensureSession();
+    const context = authenticated ? await buildDecisionContext() : null;
+
     if (!context) {
-      console.log('[CYCLE] Could not build decision context. Skipping cycle.\n');
+      await runReadOnlyCycle();
       return;
     }
 
-    await captureLearningSnapshot(context.gameweek, context.hoursToDeadline <= PRE_DEADLINE_HOURS);
+    const shadowCapture = await captureLearningSnapshot(
+      context.gameweek,
+      context.hoursToDeadline <= PRE_DEADLINE_HOURS
+    );
     
     const engine = await getOptimizationEngine();
     const latestFinishedGameweek = engine.getGameweeks()
@@ -450,19 +528,23 @@ async function runCycle(): Promise<void> {
     console.log(`[TEAM] Free transfers: ${context.freeTransfers}, Bank: £${(context.bank / 10).toFixed(1)}m`);
     
     // Run phase-specific logic
-    switch (newPhase) {
-      case 'monitor':
-        await runMonitorPhase(context);
-        break;
-      case 'plan':
-        await runPlanPhase(context);
-        break;
-      case 'execute':
-        await runExecutePhase(context);
-        break;
-      case 'post-deadline':
-        await runPostDeadline(context);
-        break;
+    try {
+      switch (newPhase) {
+        case 'monitor':
+          await runMonitorPhase(context);
+          break;
+        case 'plan':
+          await runPlanPhase(context);
+          break;
+        case 'execute':
+          await runExecutePhase(context);
+          break;
+        case 'post-deadline':
+          await runPostDeadline(context);
+          break;
+      }
+    } finally {
+      if (shadowCapture) await captureMlShadowForecasts(shadowCapture);
     }
   } catch (error) {
     console.error('[CYCLE] Error in cycle:', error);

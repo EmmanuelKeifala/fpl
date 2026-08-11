@@ -1,5 +1,6 @@
 # Dependencies
 node_modules/
+.venv*/
 
 # Build output
 dist/
@@ -42,6 +43,8 @@ coverage/
 # Cache
 .cache/
 .tsbuildinfo
+__pycache__/
+*.py[cod]
 
 # Temp files
 tmp/

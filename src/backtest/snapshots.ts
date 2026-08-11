@@ -53,7 +53,15 @@ export function validateSnapshot(snapshot: GameweekSnapshot): ValidationResult {
 }
 
 export class FileSnapshotStore {
-  constructor(private readonly directory: string) {}
+  constructor(
+    private readonly directory: string,
+    private readonly expected: {
+      season?: string;
+      dataMode?: GameweekSnapshot['provenance']['dataMode'];
+      rulesVersion?: string;
+      snapshotVersion?: string;
+    } = {}
+  ) {}
 
   async getSnapshot(gameweek: number): Promise<GameweekSnapshot> {
     const raw = await readFile(join(this.directory, `gw-${gameweek}.json`), 'utf8');
@@ -62,6 +70,21 @@ export class FileSnapshotStore {
 
     if (!validation.valid) {
       throw new Error(`Invalid snapshot for GW${gameweek}: ${validation.errors.join('; ')}`);
+    }
+    if (snapshot.gameweek !== gameweek) {
+      throw new Error(`Snapshot file gw-${gameweek}.json contains GW${snapshot.gameweek}`);
+    }
+    if (this.expected.season && snapshot.season !== this.expected.season) {
+      throw new Error(`Snapshot GW${gameweek} season ${snapshot.season} does not match ${this.expected.season}`);
+    }
+    if (this.expected.dataMode && snapshot.provenance.dataMode !== this.expected.dataMode) {
+      throw new Error(`Snapshot GW${gameweek} mode ${snapshot.provenance.dataMode} does not match ${this.expected.dataMode}`);
+    }
+    if (this.expected.rulesVersion && snapshot.provenance.rulesVersion !== this.expected.rulesVersion) {
+      throw new Error(`Snapshot GW${gameweek} rules ${snapshot.provenance.rulesVersion} do not match ${this.expected.rulesVersion}`);
+    }
+    if (this.expected.snapshotVersion && snapshot.provenance.snapshotVersion !== this.expected.snapshotVersion) {
+      throw new Error(`Snapshot GW${gameweek} version ${snapshot.provenance.snapshotVersion} does not match ${this.expected.snapshotVersion}`);
     }
 
     return snapshot;

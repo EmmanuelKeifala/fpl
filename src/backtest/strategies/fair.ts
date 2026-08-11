@@ -40,7 +40,7 @@ export function createFairStrategy(options: FairStrategyOptions = {}): BacktestS
         if (freeHitGain >= config.freeHitThreshold) {
           return {
             gameweek: snapshot.gameweek,
-            transfers: replacementTransfers(currentIds, rebuiltIds),
+            transfers: replacementTransfers(currentIds, rebuiltIds, playersById),
             startingXi: rebuiltLineup.startingXi,
             bench: rebuiltLineup.bench,
             captain: rebuiltCaptaincy.captain,
@@ -58,7 +58,7 @@ export function createFairStrategy(options: FairStrategyOptions = {}): BacktestS
         if (wildcardGain >= config.wildcardThreshold) {
           return {
             gameweek: snapshot.gameweek,
-            transfers: replacementTransfers(currentIds, rebuiltIds),
+            transfers: replacementTransfers(currentIds, rebuiltIds, playersById),
             startingXi: rebuiltLineup.startingXi,
             bench: rebuiltLineup.bench,
             captain: rebuiltCaptaincy.captain,
@@ -178,10 +178,29 @@ function projectedSquad(playerIds: number[], playersById: Map<number, BacktestPl
   return playerIds.reduce((total, playerId) => total + (playersById.get(playerId)?.expectedPoints ?? 0), 0);
 }
 
-export function replacementTransfers(currentIds: number[], rebuiltIds: number[]): TransferMove[] {
-  const outgoing = [...currentIds].filter(playerId => !rebuiltIds.includes(playerId)).sort((a, b) => a - b);
-  const incoming = [...rebuiltIds].filter(playerId => !currentIds.includes(playerId)).sort((a, b) => a - b);
-  return outgoing.map((out, index) => ({ out, in: incoming[index]! }));
+export function replacementTransfers(
+  currentIds: number[],
+  rebuiltIds: number[],
+  playersById: Map<number, BacktestPlayer>
+): TransferMove[] {
+  const outgoing = [...currentIds].filter(playerId => !rebuiltIds.includes(playerId));
+  const incoming = [...rebuiltIds].filter(playerId => !currentIds.includes(playerId));
+  const transfers: TransferMove[] = [];
+
+  for (const elementType of [1, 2, 3, 4]) {
+    const outgoingAtPosition = outgoing
+      .filter(playerId => playersById.get(playerId)?.elementType === elementType)
+      .sort((a, b) => a - b);
+    const incomingAtPosition = incoming
+      .filter(playerId => playersById.get(playerId)?.elementType === elementType)
+      .sort((a, b) => a - b);
+    if (outgoingAtPosition.length !== incomingAtPosition.length) {
+      throw new Error(`Cannot pair rebuilt squad transfers at element type ${elementType}`);
+    }
+    transfers.push(...outgoingAtPosition.map((out, index) => ({ out, in: incomingAtPosition[index]! })));
+  }
+
+  return transfers;
 }
 
 function applyTransferIds(playerIds: number[], transfers: TransferMove[]): number[] {

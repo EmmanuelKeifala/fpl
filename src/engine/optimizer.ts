@@ -2,6 +2,7 @@
 import { getFPLClient } from '../api/client.js';
 import type { Player, Fixture, Team, Gameweek } from '../api/types.js';
 import { projectPlayerPoints } from '../strategy/projections.js';
+import { deriveSeasonConfig, isChipLegalInGameweek, type LiveSeasonConfig } from '../strategy/season.js';
 import { getForecastAccuracy, getRollingPlayerProfiles, type RollingPlayerProfile } from '../db/client.js';
 import type { PlayerNewsSignal } from '../scheduler/news-signals.js';
 
@@ -74,6 +75,7 @@ class OptimizationEngine {
   private rollingProfiles = new Map<number, RollingPlayerProfile>();
   private calibrationBias = 0;
   private newsSignals = new Map<number, PlayerNewsSignal>();
+  private seasonConfig: LiveSeasonConfig | null = null;
 
   setNewsSignals(signals: PlayerNewsSignal[]): void {
     this.newsSignals = new Map(signals.map(signal => [signal.playerId, signal]));
@@ -82,7 +84,10 @@ class OptimizationEngine {
   async initialize(): Promise<void> {
     const client = getFPLClient();
     const bootstrap = await client.getBootstrapStatic();
-    
+
+    // Season rules (budget, chip windows, transfer caps) come from the live game.
+    this.seasonConfig = deriveSeasonConfig(bootstrap);
+
     // Index players and teams
     bootstrap.elements.forEach(p => this.players.set(p.id, p));
     bootstrap.teams.forEach(t => this.teams.set(t.id, t));
@@ -340,12 +345,25 @@ class OptimizationEngine {
     const gwFixtures = this.fixtures.filter(f => f.event === gameweek);
     const isDGW = this.isDGW(gameweek);
     const isBGW = this.isBGW(gameweek);
-    
+
     let recommended = false;
     let expectedGain = 0;
     let reasoning = '';
     let confidence = 0.5;
-    
+
+    // The game publishes per-chip windows (each chip has a first-half and a
+    // second-half window), so a chip outside its window can never be played.
+    if (!this.isChipLegal(chip, gameweek)) {
+      return {
+        chip,
+        recommended: false,
+        gameweek,
+        expectedGain: 0,
+        reasoning: `${chip} is not available in GW${gameweek} under this season's chip windows`,
+        confidence: 1,
+      };
+    }
+
     switch (chip) {
       case 'bboost': {
         // Bench Boost: Best in DGW with strong bench
@@ -501,6 +519,15 @@ class OptimizationEngine {
   // Get all gameweeks (for deadline access)
   getGameweeks(): Gameweek[] {
     return this.gameweeks;
+  }
+
+  getSeasonConfig(): LiveSeasonConfig {
+    if (!this.seasonConfig) throw new Error('Optimization engine is not initialized');
+    return this.seasonConfig;
+  }
+
+  isChipLegal(chip: 'wildcard' | 'freehit' | 'bboost' | '3xc', gameweek: number): boolean {
+    return isChipLegalInGameweek(this.getSeasonConfig(), chip, gameweek);
   }
 
   // Get next deadline information

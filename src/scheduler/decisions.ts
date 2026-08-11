@@ -569,10 +569,13 @@ export async function evaluateChips(
   const engine = await getOptimizationEngine();
   
   const chips: ('wildcard' | 'freehit' | 'bboost' | '3xc')[] = ['wildcard', 'freehit', 'bboost', '3xc'];
+  // A chip is playable only when this entry still holds it AND the gameweek falls
+  // inside that chip instance's window (chips are split into first/second-half copies).
   const availableChips = myTeam.chips
     .filter(c => c.status_for_entry === 'available')
+    .filter(c => gameweek >= c.start_event && gameweek <= c.stop_event)
     .map(c => c.name);
-  
+
   const recommendations: { chip: string; recommended: boolean; expectedGain: number; confidence: number; reasoning: string }[] = [];
   
   const squadPlayerIds = myTeam.picks.filter(p => p.position <= 11).map(p => p.element);

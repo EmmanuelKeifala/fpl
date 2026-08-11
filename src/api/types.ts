@@ -3,6 +3,7 @@
 // Bootstrap Static Types
 export interface BootstrapStatic {
   events: Gameweek[];
+  chips: BootstrapChip[];
   game_settings: GameSettings;
   phases: Phase[];
   teams: Team[];
@@ -72,6 +73,17 @@ export interface GameSettings {
   max_extra_free_transfers: number;
   league_h2h_tiebreak_stats: string[];
   timezone: string;
+}
+
+// Chip windows published by the game itself. The season splits each chip into
+// separate first-half and second-half windows, so a chip name can appear twice.
+export interface BootstrapChip {
+  id: number;
+  name: string;
+  number: number;
+  start_event: number;
+  stop_event: number;
+  chip_type: string;
 }
 
 export interface Phase {
@@ -475,4 +487,5 @@ export interface FPLSession {
   cookies: string;
   csrfToken: string;
   managerId: number;
+  bearerToken?: string;
 }

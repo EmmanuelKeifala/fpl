@@ -1,7 +1,12 @@
-import { unlink, writeFile } from 'node:fs/promises';
+import { readFile, unlink, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { BacktestDataSource, getDefaultBacktestCacheDir, type BacktestSourceDescriptor } from './data-source.js';
+import {
+  BacktestDataSource,
+  getDefaultBacktestCacheDir,
+  type BacktestManifest,
+  type BacktestSourceDescriptor,
+} from './data-source.js';
 import { BacktestEngine } from './engine.js';
 import { normalizeVaastavSnapshots } from './normalizer.js';
 import { buildBacktestReport, formatBacktestSummary } from './report.js';
@@ -10,6 +15,13 @@ import { FileSnapshotStore } from './snapshots.js';
 import { deterministicStrategy } from './strategies/baseline.js';
 import { createFairStrategy } from './strategies/fair.js';
 import { createAutonomousReplayStrategy } from './strategies/autonomous.js';
+import {
+  createDeploymentReplayStrategy,
+  DEPLOYMENT_REPLAY_PROFILE,
+  ML_DEPLOYMENT_REPLAY_POLICY,
+  ML_DEPLOYMENT_REPLAY_PROFILE,
+} from './strategies/deployment.js';
+import { applyReplayPredictionOverlay, loadReplayPredictionOverlay } from '../ml/replay-predictions.js';
 import { createOracleStrategy } from './strategies/oracle.js';
 import { formatExperimentSummary, parseExperimentOptions, runExperimentMatrix } from './experiments/runner.js';
 import { getSeasonRules } from './season-rules.js';
@@ -25,7 +37,7 @@ export function parseRunOptions(args: string[]): RunOptions {
   const top10kArg = args.find(arg => arg.startsWith('--top10k-cutoff='));
   const dataModeArg = args.find(arg => arg.startsWith('--data-mode='));
   const strategy = (strategyArg?.split('=')[1] ?? 'baseline') as BacktestStrategyName;
-  if (!['baseline', 'fair', 'autonomous', 'oracle'].includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
+  if (!['baseline', 'fair', 'autonomous', 'deployment', 'deployment-ml', 'oracle'].includes(strategy)) throw new Error(`Unknown strategy ${strategy}`);
   const top10kCutoff = top10kArg ? Number(top10kArg.split('=')[1]) : undefined;
   if (top10kCutoff !== undefined && (!Number.isInteger(top10kCutoff) || top10kCutoff <= 0)) {
     throw new Error('Top-10k cutoff must be a positive integer');
@@ -175,12 +187,36 @@ async function removeManifest(preparedCacheDir: string): Promise<void> {
 export async function runSeason(options: RunOptions = { strategy: 'baseline', season: DEFAULT_SEASON }): Promise<void> {
   const season = parseSeason(options.season);
   const dataMode = options.dataMode ?? 'reconstructed';
-  getSeasonRules(season);
-  const store = new FileSnapshotStore(cacheDir(season, dataMode));
-  const snapshots = await Promise.all(Array.from({ length: 38 }, (_, index) => store.getSnapshot(index + 1)));
+  const rules = getSeasonRules(season);
+  const preparedCacheDir = cacheDir(season, dataMode);
+  const manifest = await loadReplayManifest(preparedCacheDir, season, dataMode, rules.version);
+  const store = new FileSnapshotStore(preparedCacheDir, {
+    season,
+    dataMode,
+    rulesVersion: rules.version,
+    snapshotVersion: manifest.snapshotVersion,
+  });
+  const loadedSnapshots = await Promise.all(Array.from({ length: 38 }, (_, index) => store.getSnapshot(index + 1)));
+  const snapshots = options.strategy === 'deployment-ml'
+    ? applyReplayPredictionOverlay(
+      loadedSnapshots,
+      await loadReplayPredictionOverlay(
+        process.env.FPL_ML_REPLAY_PREDICTIONS
+          ?? join(process.cwd(), 'data/ml/player-fixture-v1/out-of-season-predictions.csv'),
+        season
+      ),
+      'player-fixture-v1'
+    )
+    : loadedSnapshots;
   const firstSnapshot = snapshots[0]!;
+  const snapshotsByGameweek = new Map(snapshots.map(snapshot => [snapshot.gameweek, snapshot]));
   const strategy = options.strategy === 'fair'
     ? createFairStrategy()
+    : options.strategy === 'deployment' || options.strategy === 'deployment-ml'
+      ? createDeploymentReplayStrategy(
+        snapshots,
+        options.strategy === 'deployment-ml' ? ML_DEPLOYMENT_REPLAY_POLICY : undefined
+      )
     : options.strategy === 'autonomous'
       ? createAutonomousReplayStrategy()
     : options.strategy === 'oracle'
@@ -189,11 +225,26 @@ export async function runSeason(options: RunOptions = { strategy: 'baseline', se
   const engine = new BacktestEngine({
     season,
     gameweeks: Array.from({ length: 38 }, (_, index) => index + 1),
-    getSnapshot: gameweek => store.getSnapshot(gameweek),
+    getSnapshot: async gameweek => {
+      const snapshot = snapshotsByGameweek.get(gameweek);
+      if (!snapshot) throw new Error(`Missing loaded snapshot for GW${gameweek}`);
+      return snapshot;
+    },
     strategy,
   });
   const state = await engine.run();
-  const report = buildBacktestReport(state, firstSnapshot.provenance, options.strategy, snapshots, options.top10kCutoff);
+  const report = buildBacktestReport(
+    state,
+    firstSnapshot.provenance,
+    options.strategy,
+    snapshots,
+    options.top10kCutoff,
+    options.strategy === 'deployment'
+      ? DEPLOYMENT_REPLAY_PROFILE
+      : options.strategy === 'deployment-ml'
+        ? ML_DEPLOYMENT_REPLAY_PROFILE
+        : undefined
+  );
   const reportPath = join(cacheDir(season, dataMode), `report-${options.strategy}-${dataMode}.json`);
   const weeklyPath = join(cacheDir(season, dataMode), `report-${options.strategy}-${dataMode}-weekly.csv`);
   await writeFile(reportPath, `${JSON.stringify(report, null, 2)}\n`);
@@ -213,6 +264,28 @@ export async function runSeason(options: RunOptions = { strategy: 'baseline', se
   console.log(`Report: ${reportPath}`);
   console.log(`Weekly CSV: ${weeklyPath}`);
   console.log(JSON.stringify(report, null, 2));
+}
+
+async function loadReplayManifest(
+  directory: string,
+  season: string,
+  dataMode: ReplayDataMode,
+  rulesVersion: string
+): Promise<BacktestManifest> {
+  let manifest: BacktestManifest;
+  try {
+    manifest = JSON.parse(await readFile(join(directory, 'manifest.json'), 'utf8')) as BacktestManifest;
+  } catch (error) {
+    const detail = error instanceof Error ? error.message : String(error);
+    throw new Error(`Replay cache at ${directory} is not prepared: ${detail}`);
+  }
+  if (manifest.season !== season) throw new Error(`Replay manifest season ${manifest.season} does not match ${season}`);
+  if (manifest.dataMode !== dataMode) throw new Error(`Replay manifest mode ${manifest.dataMode} does not match ${dataMode}`);
+  if (manifest.rulesVersion !== rulesVersion) {
+    throw new Error(`Replay manifest rules ${manifest.rulesVersion} do not match ${rulesVersion}`);
+  }
+  if (!manifest.snapshotVersion) throw new Error('Replay manifest snapshot version is missing');
+  return manifest;
 }
 
 async function main(): Promise<void> {

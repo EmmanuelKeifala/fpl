@@ -40,33 +40,40 @@ export function buildCandidateDecisions(input: CandidateBuildInput): CandidateDe
   const candidates: CandidateDecision[] = [buildCandidate('hold', 'Hold squad', input.snapshot.gameweek, currentIds, [], playersById)];
 
   const transferChoices = singleTransferChoices(input.state.squad, input.state.bank, input.snapshot.knownBeforeDeadline.players);
-  const multiTransferChoices = input.state.freeTransfers >= 2
+  const twoTransferChoices = input.state.freeTransfers >= 2 || input.allowHits
     ? hitTransferChoices(input.state.squad, input.state.bank, input.state.freeTransfers, input.snapshot.knownBeforeDeadline.players, input.hitThreshold ?? 4.5)
-      .filter(choice => (choice.hitCost ?? 0) === 0)
     : [];
-  const primaryChoices = [...transferChoices, ...multiTransferChoices].sort(compareTransferChoices);
+  const rankedChoices = [
+    ...transferChoices.map(choice => ({ choice, kind: 'transfer' as const })),
+    ...twoTransferChoices
+      .filter(choice => (choice.hitCost ?? 0) === 0)
+      .map(choice => ({ choice, kind: 'multi-transfer' as const })),
+    ...(input.allowHits
+      ? twoTransferChoices
+        .filter(choice => (choice.hitCost ?? 0) > 0)
+        .map(choice => ({ choice, kind: 'hit' as const }))
+      : []),
+  ].sort((a, b) => compareTransferChoices(a.choice, b.choice) || a.kind.localeCompare(b.kind));
   let transferCount = 0;
   let multiTransferCount = 0;
-  for (const choice of primaryChoices) {
+  let hitCount = 0;
+  for (const { choice, kind } of rankedChoices) {
     if (candidates.length >= maxCandidates) break;
-    if (choice.transfers.length === 1) transferCount += 1;
-    else multiTransferCount += 1;
-    const id = choice.transfers.length === 1 ? `transfer-${transferCount}` : `multi-transfer-${multiTransferCount}`;
-    const label = choice.transfers.length === 1 ? `Transfer alternative ${transferCount}` : `Multi-transfer alternative ${multiTransferCount}`;
+    if (kind === 'transfer') transferCount += 1;
+    else if (kind === 'multi-transfer') multiTransferCount += 1;
+    else hitCount += 1;
+    const id = kind === 'transfer'
+      ? `transfer-${transferCount}`
+      : kind === 'multi-transfer'
+        ? `multi-transfer-${multiTransferCount}`
+        : `hit-${hitCount}`;
+    const label = kind === 'transfer'
+      ? `Transfer alternative ${transferCount}`
+      : kind === 'multi-transfer'
+        ? `Multi-transfer alternative ${multiTransferCount}`
+        : `Hit alternative ${hitCount}`;
     const idsAfterTransfers = applyTransferIds(currentIds, choice.transfers);
     candidates.push(buildCandidate(id, label, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
-  }
-
-  if (input.allowHits) {
-    const hitChoices = hitTransferChoices(input.state.squad, input.state.bank, input.state.freeTransfers, input.snapshot.knownBeforeDeadline.players, input.hitThreshold ?? 4.5)
-      .filter(choice => (choice.hitCost ?? 0) > 0);
-    let hitCount = 0;
-    for (const choice of hitChoices) {
-      if (candidates.length >= maxCandidates) break;
-      hitCount += 1;
-      const idsAfterTransfers = applyTransferIds(currentIds, choice.transfers);
-      candidates.push(buildCandidate(`hit-${hitCount}`, `Hit alternative ${hitCount}`, input.snapshot.gameweek, idsAfterTransfers, choice.transfers, playersById));
-    }
   }
 
   return candidates.slice(0, maxCandidates);
@@ -75,7 +82,7 @@ export function buildCandidateDecisions(input: CandidateBuildInput): CandidateDe
 function singleTransferChoices(squad: SquadPick[], bank: number, players: BacktestPlayer[]): TransferChoice[] {
   const playersById = new Map(players.map(player => [player.id, player]));
   const squadIds = new Set(squad.map(pick => pick.playerId));
-  const currentScore = scoreSquad(squad.map(pick => playersById.get(pick.playerId)).filter(Boolean) as BacktestPlayer[]);
+  const currentScore = scorePlayableSquad(squad.map(pick => playersById.get(pick.playerId)).filter(Boolean) as BacktestPlayer[]);
   const choices: TransferChoice[] = [];
 
   for (const outgoing of squad) {
@@ -86,20 +93,20 @@ function singleTransferChoices(squad: SquadPick[], bank: number, players: Backte
       const transfers = [{ out: outgoing.playerId, in: incoming.id }];
       const finalPlayers = playersAfterTransfers(squad, transfers, playersById);
       if (!finalPlayers || !isLegalSquad(finalPlayers, calculateBankAfterTransfers(squad, bank, transfers, playersById))) continue;
-      const projectedGain = scoreSquad(finalPlayers) - currentScore;
+      const projectedGain = scorePlayableSquad(finalPlayers) - currentScore;
       if (projectedGain <= 0) continue;
       choices.push({ transfers, projectedGain });
     }
   }
 
-  return dedupeTransferChoices(choices).sort(compareTransferChoices);
+  return choices.sort(compareTransferChoices);
 }
 
 function hitTransferChoices(squad: SquadPick[], bank: number, freeTransfers: number, players: BacktestPlayer[], hitThreshold: number): TransferChoice[] {
   const playersById = new Map(players.map(player => [player.id, player]));
   const squadIds = new Set(squad.map(pick => pick.playerId));
   const candidatesByElementType = groupPlayersByElementType(candidatePlayers(players.filter(player => !squadIds.has(player.id)), MAX_CANDIDATES_PER_POSITION));
-  const currentScore = scoreSquad(squad.map(pick => playersById.get(pick.playerId)).filter(Boolean) as BacktestPlayer[]);
+  const currentScore = scorePlayableSquad(squad.map(pick => playersById.get(pick.playerId)).filter(Boolean) as BacktestPlayer[]);
   const choices: TransferChoice[] = [];
   const seen = new Set<string>();
 
@@ -125,9 +132,9 @@ function hitTransferChoices(squad: SquadPick[], bank: number, freeTransfers: num
           const bankAfter = calculateBankAfterTransfers(squad, bank, transfers, playersById);
           if (!finalPlayers || !isLegalSquad(finalPlayers, bankAfter)) continue;
           const hitCost = Math.max(0, transfers.length - freeTransfers) * FPL_RULES.hitCost;
-          const projectedGain = scoreSquad(finalPlayers) - currentScore - hitCost;
-          if (hitCost > 0 && projectedGain < hitThreshold) continue;
-          choices.push({ transfers, projectedGain, hitCost });
+          const grossProjectedGain = scorePlayableSquad(finalPlayers) - currentScore;
+          if (hitCost > 0 && grossProjectedGain < hitThreshold) continue;
+          choices.push({ transfers, projectedGain: grossProjectedGain - hitCost, hitCost });
         }
       }
     }
@@ -183,23 +190,16 @@ function isLegalSquad(players: BacktestPlayer[], bank: number): boolean {
   return validateSquad(players, players.reduce((total, player) => total + player.price, bank)).valid;
 }
 
-function dedupeTransferChoices(choices: TransferChoice[]): TransferChoice[] {
-  const bestByIncoming = new Map<number, TransferChoice>();
-  for (const choice of choices) {
-    const incoming = choice.transfers[0]?.in;
-    if (incoming === undefined) continue;
-    const current = bestByIncoming.get(incoming);
-    if (!current || compareTransferChoices(choice, current) < 0) bestByIncoming.set(incoming, choice);
-  }
-  return [...bestByIncoming.values()];
-}
-
 function compareTransferChoices(a: TransferChoice, b: TransferChoice): number {
   return b.projectedGain - a.projectedGain || (a.transfers[0]?.in ?? 0) - (b.transfers[0]?.in ?? 0);
 }
 
-function scoreSquad(players: BacktestPlayer[]): number {
-  return players.reduce((total, player) => total + player.expectedPoints, 0);
+function scorePlayableSquad(players: BacktestPlayer[]): number {
+  const playersById = new Map(players.map(player => [player.id, player]));
+  const lineup = selectLineup(players.map(player => player.id), playersById);
+  const captaincy = selectCaptaincy(lineup.startingXi, playersById);
+  return lineup.startingXi.reduce((total, playerId) => total + (playersById.get(playerId)?.expectedPoints ?? 0), 0)
+    + (playersById.get(captaincy.captain)?.expectedPoints ?? 0);
 }
 
 function buildCandidate(

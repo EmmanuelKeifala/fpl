@@ -230,8 +230,8 @@ test('applyGameweekDecision does not consume saved transfers for wildcard and fr
   const wildcard = applyGameweekDecision(afterGw1, validDecision({ ...transferDecision, chip: 'wildcard' }), snapshot(2));
   const freehit = applyGameweekDecision(afterGw1, validDecision({ ...transferDecision, chip: 'freehit' }), snapshot(2));
 
-  assert.equal(wildcard.freeTransfers, 2);
-  assert.equal(freehit.freeTransfers, 2);
+  assert.equal(wildcard.freeTransfers, 1);
+  assert.equal(freehit.freeTransfers, 1);
 });
 
 test('applyGameweekDecision rejects scoring players not owned by final squad', () => {
