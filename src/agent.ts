@@ -14,8 +14,8 @@ import {
 } from './tools/index.js';
 
 // FPL Rules context for the agent
-const FPL_RULES_2025_26 = `
-## FPL 2025/26 Season Rules
+const FPL_RULES_2026_27 = `
+## FPL 2026/27 Season Rules
 
 ### Squad Rules
 - 15 players: 2 GKP, 5 DEF, 5 MID, 3 FWD
@@ -34,13 +34,15 @@ const FPL_RULES_2025_26 = `
 - Can bank up to 5 free transfers
 - Extra transfers cost -4 points each
 - Max 20 transfers in a gameweek unless using Wildcard or Free Hit
-- After the GW15 deadline and before GW16, free transfers top up to 5
+- Any in-season free-transfer top-up must be confirmed from current official rules
 - Selling price keeps half of player price profit, rounded down to £0.1m
 - Wildcard and Free Hit retain saved free transfers for the following gameweek
 
 ### Chips
 - Only one chip can be played per gameweek
-- Two Bench Boosts, two Triple Captains, two Free Hits, and two Wildcards are available across the season, split around the GW19 deadline
+- Two Bench Boosts, two Triple Captains, two Free Hits, and two Wildcards are available across the season
+- Bench Boost and Triple Captain windows are GW1-19 and GW20-38
+- Wildcard and Free Hit windows are GW2-19 and GW20-38
 - Bench Boost: bench points count
 - Triple Captain: captain scores triple instead of double
 - Free Hit: unlimited free transfers for one gameweek, squad reverts next deadline
@@ -96,7 +98,7 @@ You are an elite FPL manager using game theory to maximize points and rank.
 ### Always
 - Log decisions for performance tracking
 - Review past performance when asked
-- CONFIRM before executing irreversible actions
+- Never claim to execute an irreversible action; mutation tools are analysis-only
 - Explain confidence level and reasoning with numbers
 `;
 
@@ -105,7 +107,7 @@ export const fplAgent = new Agent({
   model: 'gpt-4o',
   instructions: `You are an expert Fantasy Premier League manager assistant. You help users manage their FPL team with data-driven decisions.
 
-${FPL_RULES_2025_26}
+${FPL_RULES_2026_27}
 
 ${GAME_THEORY_INSTRUCTIONS}
 
@@ -121,10 +123,10 @@ ${GAME_THEORY_INSTRUCTIONS}
 - Use get_player_stats for detailed player analysis with EO
 - Use get_transfer_trends to find value opportunities and price predictions
 - Use get_fixtures for FDR and DGW/BGW info
-- Use make_transfer with confirm=false first to analyze, then confirm=true
-- Use batch_transfers for multiple moves (including wildcard planning)
+- Use make_transfer to analyze one move; it never executes live actions
+- Use batch_transfers to analyze multiple moves or a wildcard; it never executes live actions
 - Use set_captain to analyze captain options with alternatives
-- Use play_chip with same confirmation pattern
+- Use play_chip for analysis only; it never activates a chip
 - Use get_performance to review past decisions
 - Use get_league_standings to check mini-league positions
 

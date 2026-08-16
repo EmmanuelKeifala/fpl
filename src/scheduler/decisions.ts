@@ -2,8 +2,8 @@
 // Includes intelligence gathering for late news and player updates
 import { getFPLClient } from '../api/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
-import { logDecision, getDecisionsByType, savePlayerNewsSignals } from '../db/client.js';
-import { validateTransfer, validateChip, resetWeeklyTransfers } from './limits.js';
+import { savePlayerNewsSignals } from '../db/client.js';
+import { getRunnerTimingConfig, validateTransfer, validateChip, resetWeeklyTransfers } from './limits.js';
 import { gatherFPLNews, type NewsItem } from './news.js';
 import type { Player, MyTeam } from '../api/types.js';
 import type { TeamSelection } from '../api/client.js';
@@ -51,10 +51,14 @@ export interface OptimalLineup {
   viceCaptain: Player;
   captainExpectedPoints: number;
   expectedPoints: number;
+  confidence: number;
 }
 
 export interface DecisionContext {
+  season: string;
+  managerId: number;
   gameweek: number;
+  deadline: Date | null;
   hoursToDeadline: number;
   isPreDeadline: boolean;
   myTeam: MyTeam | null;
@@ -65,6 +69,21 @@ export interface DecisionContext {
   newsAlerts: string[];
   externalNews: NewsItem[];
   newsSignals: PlayerNewsSignal[];
+}
+
+export function getFreeTransfers(myTeam: MyTeam): number {
+  if (myTeam.transfers.status === 'unlimited' || myTeam.transfers.limit === null) {
+    return Number.POSITIVE_INFINITY;
+  }
+  return Math.max(0, myTeam.transfers.limit - myTeam.transfers.made);
+}
+
+export function getActiveLineupChip(myTeam: MyTeam): 'bboost' | '3xc' | null {
+  const active = myTeam.chips.find(chip =>
+    (chip.status_for_entry === 'active' || chip.is_pending === true)
+    && (chip.name === 'bboost' || chip.name === '3xc')
+  );
+  return active?.name as 'bboost' | '3xc' | undefined ?? null;
 }
 
 // Cache for detecting player status changes (late news)
@@ -138,7 +157,7 @@ export async function gatherIntelligence(gameweek?: number, deadline?: Date): Pr
     ...buildExternalNewsSignals({ items: externalNews, players: allPlayers, gameweek: targetGameweek, deadline: targetDeadline }),
   ]);
   engine.setNewsSignals(newsSignals);
-  await savePlayerNewsSignals(newsSignals);
+  await savePlayerNewsSignals(engine.getSeasonConfig().season, newsSignals);
   
   // Add high priority news to alerts
   for (const news of externalNews.filter(n => n.priority === 'high')) {
@@ -203,7 +222,7 @@ export async function findBestTransfers(
   maxCandidates: number = 5
 ): Promise<TransferCandidate[]> {
   const engine = await getOptimizationEngine();
-  const freeTransfers = myTeam.transfers.limit - myTeam.transfers.made;
+  const freeTransfers = getFreeTransfers(myTeam);
   const bank = myTeam.transfers.bank;
   const sellingPrices = new Map(myTeam.picks.map(p => [p.element, p.selling_price]));
   
@@ -253,6 +272,9 @@ export async function findBestTransfers(
         p.element_type === position &&
         p.now_cost <= maxPrice &&
         p.status === 'a' &&
+        p.can_select !== false &&
+        p.can_transact !== false &&
+        p.removed !== true &&
         !squadPlayerIds.includes(p.id) &&
         p.id !== playerOut.id &&
         (squadTeamCounts.get(p.team) ?? 0) - (p.team === playerOut.team ? 1 : 0) < 3
@@ -306,7 +328,7 @@ export async function optimizeTransferPlan(
   horizon: number = 6
 ): Promise<OptimizedTransferPlan> {
   const engine = await getOptimizationEngine();
-  const freeTransfers = Math.max(0, myTeam.transfers.limit - myTeam.transfers.made);
+  const freeTransfers = getFreeTransfers(myTeam);
   const originalIds = new Set(myTeam.picks.map(pick => pick.element));
   const projections = new Map<number, ReturnType<typeof engine.calculateExpectedPoints>>();
   const projectedValue = (playerId: number) => {
@@ -374,7 +396,13 @@ export async function optimizeTransferPlan(
   const replacementPool = new Map<number, Player[]>();
   for (let position = 1; position <= 4; position++) {
     replacementPool.set(position, engine.getAllPlayers()
-      .filter(player => player.element_type === position && player.status === 'a')
+      .filter(player =>
+        player.element_type === position
+        && player.status === 'a'
+        && player.can_select !== false
+        && player.can_transact !== false
+        && player.removed !== true
+      )
       .sort((a, b) => projectedValue(b.id) - projectedValue(a.id))
       .slice(0, 14));
   }
@@ -537,9 +565,9 @@ export async function selectOptimalLineup(myTeam: MyTeam): Promise<OptimalLineup
     .sort((a, b) => b.xp - a.xp || a.player.id - b.player.id);
   if (!benchGoalkeeper || benchOutfield.length !== 3) throw new Error('Cannot construct a legal bench');
 
-  const captaincy = [...best.starters].sort((a, b) => b.xp - a.xp || a.player.id - b.player.id);
-  const captain = captaincy[0]!.player;
-  const viceCaptain = captaincy[1]!.player;
+  const captaincy = selectStableCaptaincy(best.starters, myTeam);
+  const captain = captaincy.captain.player;
+  const viceCaptain = captaincy.viceCaptain.player;
   const ordered = [...best.starters.map(entry => entry.player), benchGoalkeeper.player, ...benchOutfield.map(entry => entry.player)];
   const selection = ordered.map((player, index) => ({
     element: player.id,
@@ -554,9 +582,51 @@ export async function selectOptimalLineup(myTeam: MyTeam): Promise<OptimalLineup
     bench: [benchGoalkeeper.player, ...benchOutfield.map(entry => entry.player)],
     captain,
     viceCaptain,
-    captainExpectedPoints: captaincy[0]!.xp,
-    expectedPoints: best.score,
+    captainExpectedPoints: captaincy.captain.xp,
+    expectedPoints: best.score + captaincy.captain.xp,
+    confidence: Math.min(...best.starters.map(entry => entry.xp > 0
+      ? engine.calculateExpectedPoints(entry.player.id, 1).confidence
+      : 0)),
   };
+}
+
+export function selectStableCaptaincy(
+  starters: { player: Player; xp: number }[],
+  myTeam: Pick<MyTeam, 'picks'>
+): { captain: { player: Player; xp: number }; viceCaptain: { player: Player; xp: number } } {
+  const attacking = starters.filter(entry => entry.player.element_type === 3 || entry.player.element_type === 4);
+  const pool = attacking.length >= 2 ? attacking : starters.filter(entry => entry.player.element_type !== 1);
+  const ranked = [...(pool.length >= 2 ? pool : starters)].sort((left, right) =>
+    captainScore(right) - captainScore(left) || right.xp - left.xp || left.player.id - right.player.id
+  );
+  const currentCaptainId = myTeam.picks.find(pick => pick.is_captain)?.element;
+  const currentViceId = myTeam.picks.find(pick => pick.is_vice_captain)?.element;
+  const best = ranked[0]!;
+  const currentCaptain = ranked.find(entry => entry.player.id === currentCaptainId);
+  const captain = currentCaptain && currentCaptain.xp >= best.xp - 0.5 ? currentCaptain : best;
+  const vicePool = ranked.filter(entry => entry.player.id !== captain.player.id);
+  const bestVice = vicePool[0]!;
+  const currentVice = vicePool.find(entry => entry.player.id === currentViceId);
+  const viceCaptain = currentVice && currentVice.xp >= bestVice.xp - 0.5 ? currentVice : bestVice;
+  return { captain, viceCaptain };
+}
+
+export async function calculateCurrentLineupExpectedPoints(myTeam: MyTeam): Promise<number> {
+  const engine = await getOptimizationEngine();
+  let total = 0;
+  for (const pick of myTeam.picks.filter(candidate => candidate.position <= 11)) {
+    const points = engine.calculateExpectedPoints(pick.element, 1).nextGW;
+    total += points;
+    if (pick.is_captain) total += points;
+  }
+  return Math.round(total * 10) / 10;
+}
+
+function captainScore(entry: { player: Player; xp: number }): number {
+  const attackingUpside = (Number(entry.player.expected_goals_per_90) || 0) * 1.5
+    + (Number(entry.player.expected_assists_per_90) || 0) * 0.75;
+  const penaltyUpside = entry.player.penalties_order === 1 ? 0.4 : 0;
+  return entry.xp + attackingUpside + penaltyUpside;
 }
 
 /**
@@ -564,7 +634,8 @@ export async function selectOptimalLineup(myTeam: MyTeam): Promise<OptimalLineup
  */
 export async function evaluateChips(
   myTeam: MyTeam,
-  gameweek: number
+  gameweek: number,
+  proposedLineup?: { startingXI: Player[]; bench: Player[] }
 ): Promise<{ chip: string; recommended: boolean; expectedGain: number; confidence: number; reasoning: string }[]> {
   const engine = await getOptimizationEngine();
   
@@ -578,8 +649,12 @@ export async function evaluateChips(
 
   const recommendations: { chip: string; recommended: boolean; expectedGain: number; confidence: number; reasoning: string }[] = [];
   
-  const squadPlayerIds = myTeam.picks.filter(p => p.position <= 11).map(p => p.element);
-  const benchPlayerIds = myTeam.picks.filter(p => p.position > 11).map(p => p.element);
+  const squadPlayerIds = proposedLineup
+    ? proposedLineup.startingXI.map(player => player.id)
+    : myTeam.picks.filter(p => p.position <= 11).map(p => p.element);
+  const benchPlayerIds = proposedLineup
+    ? proposedLineup.bench.map(player => player.id)
+    : myTeam.picks.filter(p => p.position > 11).map(p => p.element);
   
   for (const chip of chips) {
     if (!availableChips.includes(chip)) continue;
@@ -639,6 +714,11 @@ export async function buildDecisionContext(): Promise<DecisionContext | null> {
     console.log('[DECISION] Failed to get authenticated team data; skipping executable cycle');
     return null;
   }
+  const managerId = client.getManagerId();
+  if (!managerId) {
+    console.log('[DECISION] Authenticated manager identity is unavailable; skipping executable cycle');
+    return null;
+  }
   
   // Use real deadline from optimizer
   const now = new Date();
@@ -647,12 +727,12 @@ export async function buildDecisionContext(): Promise<DecisionContext | null> {
   
   if (deadlineInfo) {
     hoursToDeadline = deadlineInfo.hoursRemaining;
-    isPreDeadline = hoursToDeadline <= parseInt(process.env.PRE_DEADLINE_HOURS || '2');
+    isPreDeadline = hoursToDeadline <= getRunnerTimingConfig().preDeadlineHours;
   } else {
     // Fallback to simplified calculation if no deadline found
     const hourOfDay = now.getUTCHours();
     hoursToDeadline = Math.max(0, (6 - now.getUTCDay()) * 24 + (11 - hourOfDay));
-    isPreDeadline = hoursToDeadline <= parseInt(process.env.PRE_DEADLINE_HOURS || '2');
+    isPreDeadline = hoursToDeadline <= getRunnerTimingConfig().preDeadlineHours;
   }
   
   // Analyze team health
@@ -662,11 +742,14 @@ export async function buildDecisionContext(): Promise<DecisionContext | null> {
   const intelligence = await gatherIntelligence(gameweek, deadlineInfo?.deadline);
   
   return {
+    season: engine.getSeasonConfig().season,
+    managerId,
     gameweek,
+    deadline: deadlineInfo?.deadline ?? null,
     hoursToDeadline,
     isPreDeadline,
     myTeam,
-    freeTransfers: myTeam.transfers.limit - myTeam.transfers.made,
+    freeTransfers: getFreeTransfers(myTeam),
     bank: myTeam.transfers.bank,
     teamHealth,
     playerStatusChanges: intelligence.statusChanges,

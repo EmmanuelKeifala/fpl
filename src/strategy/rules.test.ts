@@ -48,12 +48,12 @@ test('calculateSellingPrice keeps half of profit rounded down to 0.1m', () => {
   assert.equal(calculateSellingPrice(75, 74), 74);
 });
 
-test('getFreeTransfersAfterGameweek handles regular and AFCON top-up rules', () => {
+test('getFreeTransfersAfterGameweek applies only generic accrual rules', () => {
   assert.equal(getFreeTransfersAfterGameweek({ previousFreeTransfers: 1, transfersMade: 0, nextGameweek: 10 }), 2);
   assert.equal(getFreeTransfersAfterGameweek({ previousFreeTransfers: 5, transfersMade: 0, nextGameweek: 10 }), 5);
   assert.equal(getFreeTransfersAfterGameweek({ previousFreeTransfers: 2, transfersMade: 1, nextGameweek: 10 }), 2);
   assert.equal(getFreeTransfersAfterGameweek({ previousFreeTransfers: 1, transfersMade: 3, nextGameweek: 10 }), 1);
-  assert.equal(getFreeTransfersAfterGameweek({ previousFreeTransfers: 1, transfersMade: 0, nextGameweek: 16 }), 5);
+  assert.equal(getFreeTransfersAfterGameweek({ previousFreeTransfers: 1, transfersMade: 0, nextGameweek: 16 }), 2);
 });
 
 test('chip availability is split around the GW19 deadline', () => {

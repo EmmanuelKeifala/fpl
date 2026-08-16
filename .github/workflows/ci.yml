@@ -1,0 +1,27 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: npm ci
+      - run: npm run build
+      - run: npm test
+      - run: python -m unittest scripts.ml.test_pipeline scripts.ml.test_live_features
+      - run: python -m py_compile scripts/ml/pipeline.py scripts/ml/live_features.py scripts/ml/test_pipeline.py scripts/ml/test_live_features.py

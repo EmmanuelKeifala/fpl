@@ -44,15 +44,57 @@ prices, and deadlines.
     npm run dev
     ```
 
-## Autonomous Mode
+## Autonomous Worker
 
-Run the deadline-aware worker with:
+The worker is fail-closed. A fresh setup is a shadow observer with every
+mutation disabled and the emergency stop active. Verify the current public and
+authenticated state first:
 
 ```bash
+npm run preflight
+npm run auto:once
 npm run auto
 ```
 
-The worker automatically optimizes the legal starting XI, bench order, captain, and vice-captain. Set `AUTO_EXECUTE_TRANSFERS=true` to permit single or multi-transfer execution and `AUTO_PLAY_CHIPS=true` to permit high-confidence Bench Boost and Triple Captain activation. `EMERGENCY_STOP=true` immediately blocks mutations.
+Do not set `FPL_RUN_MODE=live` merely to test the worker. Live mode requires an
+explicit expected manager ID, a remote alert channel, the relevant per-action
+flag, a clear emergency stop, an authoritative deadline outside the safety
+margin, an unchanged team fingerprint, a single process/mutation lock, and
+confidence/gain gates. Every POST is persisted before execution and reconciled
+against `/my-team/`; an ambiguous outcome quarantines subsequent actions.
+
+Create `data/EMERGENCY_STOP` to stop mutations in a running process without
+restarting it. `EMERGENCY_STOP=true` remains the startup-level stop. LLM tools
+are analysis-only and cannot execute transfers, captaincy, lineups, or chips.
+
+After a lost response, inspect the authoritative FPL team before resolving the
+operation:
+
+```bash
+npm run mutations:resolve -- --id=<id> --status=confirmed --message="verified in FPL" --ack=I_VERIFIED_FPL_STATE
+```
+
+`npm run health` reads the durable worker heartbeat. See
+`docs/deployment-readiness.md` before enabling any live action.
+
+### Render deployment
+
+`render.yaml` provisions one Node background worker with a 1 GB persistent disk
+mounted at `data/`. The Blueprint deliberately deploys in shadow mode with the
+emergency stop active. During the initial Blueprint setup, Render prompts for
+the FPL credentials, manager ID, OpenAI key, and Discord webhook without storing
+those secrets in Git.
+
+Render must keep the worker at one instance because SQL.js and the mutation
+journal are single-writer. The worker exits after three consecutive failed
+cycles so Render can restart it. Automatic deploys wait for repository checks to
+pass. The worker handles `SIGTERM` gracefully, but Render does not permit a
+custom shutdown delay on disk-backed services, so deploys use Render's default
+shutdown window.
+
+After the first deploy, inspect the worker logs and persistent heartbeat for at
+least three complete gameweeks before considering the staged live canaries in
+`docs/deployment-readiness.md`.
 
 Autonomous mode also stores point-in-time player and fixture changes, takes periodic pre-deadline forecast snapshots, and reconciles predictions with actual points after each finished gameweek.
 
@@ -79,7 +121,7 @@ and bench boost / triple captain GW1-19 and GW20-38 — so no wildcard or free h
 in GW1. In-season free transfer grants are not published in bootstrap; set
 `FPL_TRANSFER_TOP_UPS="16:5"` if the game announces one.
 
-## FPL Rules (2025/26)
+## FPL Rules (2026/27)
 
 - Squad: 15 players, 2 GKP / 5 DEF / 5 MID / 3 FWD
 - Starting XI: 1 GKP, at least 3 DEF, at least 2 MID, at least 1 FWD
@@ -119,7 +161,7 @@ Reconstructed fixtures come from the final season schedule, so these reports can
 
 The local player-fixture model fits reusable schedule, position, team, and
 rolling-performance patterns without fitting player, club, opponent, or fixture
-identity. Training uses 2023/24, blend and deployment-policy selection use
+identity. Training uses 2022/23 and 2023/24, blend and deployment-policy selection use
 2024/25, and 2025/26 is a diagnostic out-of-season replay.
 
 ```bash

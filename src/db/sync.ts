@@ -14,6 +14,7 @@ export async function syncGameweekData(managerId?: number): Promise<{
 }> {
   const client = getFPLClient();
   const engine = await getOptimizationEngine();
+  const season = engine.getSeasonConfig().season;
   const currentGW = engine.getCurrentGameweek();
   
   // Use provided manager ID or get from client
@@ -29,7 +30,7 @@ export async function syncGameweekData(managerId?: number): Promise<{
   
   try {
     // Check if we already have this GW snapshot
-    const existingSnapshot = await getGameweekSnapshot(currentGW);
+    const existingSnapshot = await getGameweekSnapshot(season, mgrId, currentGW);
     
     // Get current data
     const entry = await client.getEntry(mgrId);
@@ -56,7 +57,9 @@ export async function syncGameweekData(managerId?: number): Promise<{
       .filter(c => c.event === currentGW)
       .map(c => c.name);
     
-    const snapshot: NewGameweekSnapshot = {
+    const snapshot: NewGameweekSnapshot & { season: string; managerId: number } = {
+      season,
+      managerId: mgrId,
       gameweek: currentGW,
       totalPoints: entry.summary_overall_points,
       overallRank: entry.summary_overall_rank,
@@ -102,6 +105,7 @@ export async function syncAllGameweeks(managerId?: number): Promise<{
 }> {
   const client = getFPLClient();
   const engine = await getOptimizationEngine();
+  const season = engine.getSeasonConfig().season;
   const currentGW = engine.getCurrentGameweek();
   
   const mgrId = managerId || client.getManagerId();
@@ -129,7 +133,9 @@ export async function syncAllGameweeks(managerId?: number): Promise<{
           .filter(c => c.event === gwHistory.event)
           .map(c => c.name);
         
-        const snapshot: NewGameweekSnapshot = {
+        const snapshot: NewGameweekSnapshot & { season: string; managerId: number } = {
+          season,
+          managerId: mgrId,
           gameweek: gwHistory.event,
           totalPoints: gwHistory.total_points,
           overallRank: gwHistory.overall_rank,

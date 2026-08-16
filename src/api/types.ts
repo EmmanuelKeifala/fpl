@@ -36,6 +36,9 @@ export interface Gameweek {
   transfers_made: number;
   most_captained: number;
   most_vice_captained: number;
+  can_manage?: boolean;
+  can_enter?: boolean;
+  released?: boolean;
 }
 
 export interface ChipPlay {
@@ -142,9 +145,13 @@ export interface Player {
   points_per_game: string;
   second_name: string;
   selected_by_percent: string;
+  price_change_percent?: string;
   special: boolean;
   squad_number: null;
   status: string;  // 'a' = available, 'i' = injured, etc.
+  can_select?: boolean;
+  can_transact?: boolean;
+  removed?: boolean;
   team: number;
   team_code: number;
   total_points: number;
@@ -207,6 +214,11 @@ export interface Player {
   selected_rank_type: number;
   starts_per_90: number;
   clean_sheets_per_90: number;
+  clearances_blocks_interceptions?: number;
+  recoveries?: number;
+  tackles?: number;
+  defensive_contribution?: number;
+  defensive_contribution_per_90?: number;
 }
 
 export interface ElementStat {
@@ -390,7 +402,8 @@ export interface MyTeam {
 }
 
 export interface AvailableChip {
-  status_for_entry: 'available' | 'played' | 'unavailable';
+  status_for_entry: 'available' | 'active' | 'played' | 'unavailable';
+  is_pending?: boolean;
   played_by_entry: number[];
   name: string;
   number: number;
@@ -401,8 +414,8 @@ export interface AvailableChip {
 
 export interface TransferInfo {
   cost: number;
-  status: string;
-  limit: number;
+  status: 'unlimited' | 'active' | 'available' | string;
+  limit: number | null;
   made: number;
   bank: number;
   value: number;

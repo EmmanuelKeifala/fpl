@@ -8,7 +8,15 @@
     "dev": "tsx src/index.ts",
     "build": "tsc",
     "start": "node dist/index.js",
+    "start:auto": "node dist/scheduler/runner.js",
+    "start:render": "npm run preflight:shadow && npm run start:auto",
     "auto": "tsx src/scheduler/runner.ts",
+    "auto:once": "tsx src/scheduler/runner.ts --once",
+    "health": "tsx src/scheduler/health-check.ts",
+    "preflight": "tsx src/scheduler/preflight.ts",
+    "preflight:shadow": "tsx src/scheduler/preflight.ts --require-shadow",
+    "preflight:live": "tsx src/scheduler/preflight.ts --require-live",
+    "mutations:resolve": "tsx src/scheduler/resolve-operation.ts",
     "backtest:prepare": "tsx src/backtest/index.ts prepare-data",
     "backtest:run": "tsx src/backtest/index.ts run-season",
     "backtest:full": "tsx src/backtest/index.ts run-season --strategy=deployment",
@@ -18,7 +26,7 @@
     "backtest:experiment": "tsx src/backtest/index.ts run-experiment",
     "db:generate": "drizzle-kit generate",
     "db:migrate": "tsx src/db/migrate.ts",
-    "test": "tsx --test src/**/*.test.ts"
+    "test": "tsx --test \"src/**/*.test.ts\""
   },
   "keywords": [
     "fpl",
@@ -28,6 +36,9 @@
   ],
   "author": "",
   "license": "ISC",
+  "engines": {
+    "node": ">=22.0.0"
+  },
   "dependencies": {
     "@openai/agents": "^0.4.4",
     "dotenv": "^17.2.3",

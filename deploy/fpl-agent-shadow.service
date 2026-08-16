@@ -1,0 +1,23 @@
+[Unit]
+Description=FPL Agent shadow worker
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/fpl-agent
+EnvironmentFile=%h/fpl-agent/.env
+ExecStartPre=/usr/bin/node %h/fpl-agent/dist/scheduler/preflight.js --require-shadow
+ExecStart=/usr/bin/node %h/fpl-agent/dist/scheduler/runner.js
+Restart=on-failure
+RestartSec=30
+TimeoutStopSec=90
+KillSignal=SIGTERM
+NoNewPrivileges=true
+UMask=0077
+PrivateTmp=true
+ProtectSystem=strict
+ReadWritePaths=%h/fpl-agent/data
+
+[Install]
+WantedBy=default.target

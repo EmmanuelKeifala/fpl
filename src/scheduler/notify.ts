@@ -9,6 +9,19 @@ export interface NotificationPayload {
   timestamp: Date;
 }
 
+export interface NotificationDelivery {
+  discordConfigured: boolean;
+  discordDelivered: boolean;
+  telegramConfigured: boolean;
+  telegramDelivered: boolean;
+  remoteDelivered: boolean;
+}
+
+export function hasRemoteNotificationConfig(env: NodeJS.ProcessEnv = process.env): boolean {
+  return Boolean(env.DISCORD_WEBHOOK_URL?.trim())
+    || Boolean(env.TELEGRAM_BOT_TOKEN?.trim() && env.TELEGRAM_CHAT_ID?.trim());
+}
+
 // Format notification as console log
 function logNotification(payload: NotificationPayload): void {
   const prefix = {
@@ -54,6 +67,7 @@ async function sendDiscord(payload: NotificationPayload): Promise<boolean> {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ embeds: [embed] }),
+      signal: AbortSignal.timeout(10_000),
     });
     
     return response.ok;
@@ -81,6 +95,7 @@ async function sendTelegram(payload: NotificationPayload): Promise<boolean> {
         text,
         parse_mode: 'Markdown',
       }),
+      signal: AbortSignal.timeout(10_000),
     });
     
     return response.ok;
@@ -91,15 +106,23 @@ async function sendTelegram(payload: NotificationPayload): Promise<boolean> {
 }
 
 // Main notification function
-export async function notify(payload: NotificationPayload): Promise<void> {
+export async function notify(payload: NotificationPayload): Promise<NotificationDelivery> {
   // Always log to console
   logNotification(payload);
   
-  // Send to Discord if configured
-  await sendDiscord(payload);
-  
-  // Send to Telegram if configured
-  await sendTelegram(payload);
+  const discordConfigured = Boolean(process.env.DISCORD_WEBHOOK_URL?.trim());
+  const telegramConfigured = Boolean(process.env.TELEGRAM_BOT_TOKEN?.trim() && process.env.TELEGRAM_CHAT_ID?.trim());
+  const [discordDelivered, telegramDelivered] = await Promise.all([
+    sendDiscord(payload),
+    sendTelegram(payload),
+  ]);
+  return {
+    discordConfigured,
+    discordDelivered,
+    telegramConfigured,
+    telegramDelivered,
+    remoteDelivered: discordDelivered || telegramDelivered,
+  };
 }
 
 // Convenience functions

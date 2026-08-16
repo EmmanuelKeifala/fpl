@@ -1,6 +1,6 @@
 # Local FPL Player-Fixture ML
 
-This pipeline reconstructs player-fixture examples from the three historical
+This pipeline reconstructs player-fixture examples from four historical
 seasons. It is leakage-safe at the gameweek boundary, but the source exports
 are reconstructed post-event data rather than strict deadline snapshots.
 
@@ -76,15 +76,18 @@ kickoff timestamps are metadata only. Current-row expected points, minutes,
 starts, ownership/transfers, match statistics, scores, and outcomes are never
 fitted features.
 
-Models fit only 2023-2024. The blend between direct points and appearance times
+Models fit 2022-2023 and 2023-2024. The blend between direct points and appearance times
 conditional points is selected from a fixed list on 2024-2025 active-player
 gameweek RMSE, then frozen before 2025-2026 is predicted or scored. The JSON
 export self-checks every serialized gradient-boosting model against sklearn at
 an absolute tolerance of `1e-10`. Metrics marked active use actual `minutes >
 0` only for diagnostic subsetting, never as an inference-time feature. The
 2025-2026 defensive-scoring flag is present in the schema but is unseen during
-2023-2024 model fitting, so its scoring effect cannot be learned under this
-strict season protocol. Since 2025-2026 has already been inspected during
+2022-2024 model fitting, so its scoring effect cannot be learned under this
+strict season protocol. Historical source files before 2022-2023 do not contain
+the `starts` and expected-goal columns required by this feature contract, so
+they are not silently zero-filled; a separate common-schema model is needed to
+use those older records honestly. Since 2025-2026 has already been inspected during
 development, it is a held-out diagnostic season rather than an untouched
 promotion test.
 
@@ -106,13 +109,14 @@ the diagnostic 2025-2026 replay with:
 npm run backtest:ml
 ```
 
-The selected validation policy produced 2,305 net points, 8 transfer-hit
-points, and 24 gameweeks above the published weekly average. The frozen
-diagnostic replay produced 2,000 net points, 4 transfer-hit points, and 23 of
-38 gameweeks above average, versus 1,523 points and 76 hit points for the
-heuristic deployment replay. The diagnostic weekly success rate is 60.5%, so
-it does not meet a proposed 90% promotion gate. These reconstructed results
-are not a verified rank or promotion claim.
+The validation-only policy calibration selects a two-gameweek horizon, a
+24-point hit threshold, and 40 candidates. It produced 2,354 net points with no
+transfer hits and 29 gameweeks above the published weekly average. The frozen
+2025-2026 diagnostic produced 2,112 net points with no transfer hits, 27 wins
+and one draw against the weekly average, and 217 points above the published
+season average. Its weekly win rate is 71.1%, so it still misses the proposed
+90% promotion gate. These reconstructed results are not a verified rank or
+promotion claim.
 
 ## Live Shadow Forecasts
 

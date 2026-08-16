@@ -18,10 +18,10 @@ from typing import Any, Iterable, Mapping, Sequence
 MODEL_VERSION = "player-fixture-v1"
 DATA_VERSION = "historical-gw-raw-v1"
 SCHEMA_VERSION = "player-fixture-features-v1"
-SEASONS = ("2023-2024", "2024-2025", "2025-2026")
-TRAIN_SEASON = SEASONS[0]
-VALIDATION_SEASON = SEASONS[1]
-TEST_SEASON = SEASONS[2]
+SEASONS = ("2022-2023", "2023-2024", "2024-2025", "2025-2026")
+TRAIN_SEASONS = SEASONS[:2]
+VALIDATION_SEASON = SEASONS[-2]
+TEST_SEASON = SEASONS[-1]
 POSITIONS = ("GK", "DEF", "MID", "FWD")
 WINDOWS = (2, 4, 6)
 TEAM_WINDOWS = (4, 6)
@@ -448,6 +448,16 @@ def _load_teams(path: Path) -> tuple[dict[str, int], set[int]]:
     return by_name, ids
 
 
+def _resolve_season_dir(historical_dir: Path, season: str) -> Path:
+    direct = historical_dir / season
+    candidates = (direct, direct / "reconstructed")
+    for candidate in candidates:
+        if (candidate / "teams.csv").is_file():
+            return candidate
+    checked = ", ".join(str(candidate) for candidate in candidates)
+    raise PipelineError(f"missing required season data for {season}; checked {checked}")
+
+
 def _load_gameweek(
     path: Path,
     season: str,
@@ -655,6 +665,8 @@ def _load_gameweek(
                     ),
                 )
             )
+    if not rows and raw_count == 0:
+        return [], 0, 0
     if not rows:
         raise PipelineError(f"{path}: no player rows after filtering AM records")
     return rows, raw_count, am_count
@@ -1034,9 +1046,7 @@ def build_dataset(historical_dir: Path, output_dir: Path, overwrite: bool) -> di
             writer = csv.writer(handle, lineterminator="\n")
             writer.writerow(METADATA_FIELDS + FEATURE_NAMES + TARGET_FIELDS)
             for season in SEASONS:
-                season_dir = historical_dir / season
-                if not season_dir.is_dir():
-                    raise PipelineError(f"missing required season directory: {season_dir}")
+                season_dir = _resolve_season_dir(historical_dir, season)
                 teams_by_name, valid_team_ids = _load_teams(season_dir / "teams.csv")
                 missing_gws = [
                     gameweek
@@ -1740,7 +1750,9 @@ def train_models(
         if len(indices) == 0:
             raise PipelineError(f"dataset has no rows for required season {season}")
 
-    train_indices = split_indices[TRAIN_SEASON]
+    train_indices = np.concatenate(
+        [split_indices[season] for season in TRAIN_SEASONS]
+    )
     validation_indices = split_indices[VALIDATION_SEASON]
     X_train = data.X[train_indices]
     y_appearance_train = data.appearance[train_indices]
@@ -1916,7 +1928,7 @@ def train_models(
             "player_gameweek_level": "sum over a player's fixtures in the target gameweek",
         },
         "protocol": {
-            "train_season": TRAIN_SEASON,
+            "train_seasons": list(TRAIN_SEASONS),
             "validation_season": VALIDATION_SEASON,
             "test_season": TEST_SEASON,
             "test_used_for_selection": False,
@@ -1938,7 +1950,8 @@ def train_models(
         "The model intentionally omits live availability, injury, ownership, and transfer signals.",
         "Current price is used only for a season cold start; later rows use the last prior-GW price.",
         "Defensive-contribution history is unavailable before 2025-2026 and is flagged explicitly.",
-        "The defensive-scoring flag is unseen during 2023-2024 fitting, so its test-era effect cannot be learned.",
+        "The defensive-scoring flag is unseen during 2022-2024 fitting, so its test-era effect cannot be learned.",
+        "Seasons before 2022-2023 are excluded from this advanced model because the source files omit starts and expected-goal fields; they require a separate common-schema model.",
         "Element IDs are season-local metadata, so cross-season player continuity is not modeled.",
         "Validation and test features update online from earlier completed GWs in the same season.",
     ]
@@ -1956,7 +1969,7 @@ def train_models(
         "training_protocol": metrics["protocol"],
         "training_cutoffs": {
             "latest_kickoff_by_season": cutoffs,
-            "model_fit_through": cutoffs[TRAIN_SEASON],
+            "model_fit_through": max(cutoffs[season] for season in TRAIN_SEASONS),
             "blend_selected_through": cutoffs[VALIDATION_SEASON],
             "test_scored_through": cutoffs[TEST_SEASON],
         },

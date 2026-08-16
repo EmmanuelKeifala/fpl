@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { tool } from '@openai/agents';
 import { getDecisions, getPerformanceStats, getRecentSnapshots, getDecisionsByType } from '../db/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
+import { getFPLClient } from '../api/client.js';
 
 export const getPerformanceTool = tool({
   name: 'get_performance',
@@ -16,6 +17,14 @@ export const getPerformanceTool = tool({
   execute: async ({ view, gameweekFrom, gameweekTo }) => {
     const engine = await getOptimizationEngine();
     const currentGW = engine.getCurrentGameweek();
+    const managerId = getFPLClient().getManagerId();
+    if (!managerId) {
+      return {
+        status: 'MANAGER_REQUIRED',
+        message: 'A manager ID is required to read scoped performance history.',
+      };
+    }
+    const scope = { season: engine.getSeasonConfig().season, managerId };
     
     const result: Record<string, unknown> = {
       currentGameweek: currentGW,
@@ -24,7 +33,7 @@ export const getPerformanceTool = tool({
     
     if (view === 'summary' || view === 'all') {
       // Get overall performance stats
-      const stats = await getPerformanceStats(gameweekFrom, gameweekTo);
+      const stats = await getPerformanceStats(scope, gameweekFrom || undefined, gameweekTo || undefined);
       
       result.summary = {
         totalDecisionsTracked: stats.totalDecisions,
@@ -47,7 +56,7 @@ export const getPerformanceTool = tool({
       };
       
       // Get recent snapshots for trend
-      const snapshots = await getRecentSnapshots(10);
+      const snapshots = await getRecentSnapshots(scope.season, scope.managerId, 10);
       if (snapshots.length > 1) {
         const latest = snapshots[0];
         const oldest = snapshots[snapshots.length - 1];
@@ -63,7 +72,7 @@ export const getPerformanceTool = tool({
     }
     
     if (view === 'transfers' || view === 'all') {
-      const transfers = await getDecisionsByType('transfer');
+      const transfers = await getDecisionsByType(scope, 'transfer');
       
       result.transfers = transfers.map(t => {
         const action = JSON.parse(t.action);
@@ -99,7 +108,7 @@ export const getPerformanceTool = tool({
     }
     
     if (view === 'chips' || view === 'all') {
-      const chips = await getDecisionsByType('chip');
+      const chips = await getDecisionsByType(scope, 'chip');
       
       result.chips = chips.map(c => {
         const action = JSON.parse(c.action);
@@ -117,7 +126,7 @@ export const getPerformanceTool = tool({
     }
     
     if (view === 'captains' || view === 'all') {
-      const captains = await getDecisionsByType('captain');
+      const captains = await getDecisionsByType(scope, 'captain');
       
       result.captains = captains.map(c => {
         const action = JSON.parse(c.action);
@@ -135,9 +144,9 @@ export const getPerformanceTool = tool({
     }
     
     // Add insights based on data
-    const allDecisions = await getDecisions();
+    const allDecisions = await getDecisions(scope);
     if (allDecisions.length === 0) {
-      result.note = 'No decisions tracked yet. Decisions are logged when you make transfers or play chips through this agent.';
+      result.note = 'No decisions are tracked for this manager and season yet. The deployment worker logs its recommendations and confirmed actions.';
     }
     
     return result;

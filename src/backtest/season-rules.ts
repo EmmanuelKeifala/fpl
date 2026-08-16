@@ -10,6 +10,20 @@ export interface SeasonRules {
 }
 
 const RULES: Record<string, SeasonRules> = {
+  '2022-2023': {
+    version: '2022-2023-v1',
+    maxSavedTransfers: 2,
+    transferTopUps: {},
+    initialChips: ['wildcard', 'freehit', 'bboost', '3xc'],
+    unsupportedChips: [],
+  },
+  '2023-2024': {
+    version: '2023-2024-v1',
+    maxSavedTransfers: 2,
+    transferTopUps: {},
+    initialChips: ['wildcard', 'freehit', 'bboost', '3xc'],
+    unsupportedChips: [],
+  },
   '2024-2025': {
     version: '2024-2025-v1',
     maxSavedTransfers: 5,
