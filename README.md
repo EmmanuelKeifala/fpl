@@ -9,6 +9,9 @@ AI-powered Fantasy Premier League assistant with game theory optimization.
 - **Transfer Optimization**: Smart recommendations using hit ROI analysis
 - **Chip Timing**: Optimal chip usage based on fixture analysis
 - **Performance Tracking**: SQLite database tracks all decisions
+- **Constrained LLM Review**: Structured risk review of deterministic legal plans
+- **Autonomous Learning**: Forecast reconciliation and rolling bias/profile calibration
+- **Kapso WhatsApp Updates**: Ordered plan and before/after action observability
 
 ## Setup
 
@@ -22,6 +25,8 @@ AI-powered Fantasy Premier League assistant with game theory optimization.
    - `FPL_EMAIL`: Your Premier League account email
    - `FPL_PASSWORD`: Your Premier League account password
    - `FPL_MANAGER_ID`: Optional manager ID for read-only use
+   - `KAPSO_API_KEY`, `KAPSO_PHONE_NUMBER_ID`, and `KAPSO_WHATSAPP_TO`:
+     Kapso/WhatsApp delivery credentials and the international recipient number
 
 ### FPL Session
 
@@ -64,8 +69,11 @@ confidence/gain gates. Every POST is persisted before execution and reconciled
 against `/my-team/`; an ambiguous outcome quarantines subsequent actions.
 
 Create `data/EMERGENCY_STOP` to stop mutations in a running process without
-restarting it. `EMERGENCY_STOP=true` remains the startup-level stop. LLM tools
-are analysis-only and cannot execute transfers, captaincy, lineups, or chips.
+restarting it. `EMERGENCY_STOP=true` remains the startup-level stop. The live
+LLM reviewer has no tools or FPL API access: it can approve the supplied
+deterministic option or hold, but cannot invent or execute transfers,
+captaincy, lineups, or chips. Live mode can require a sufficiently confident
+structured LLM approval in addition to every deterministic safety gate.
 
 After a lost response, inspect the authoritative FPL team before resolving the
 operation:
@@ -82,8 +90,23 @@ npm run mutations:resolve -- --id=<id> --status=confirmed --message="verified in
 `render.yaml` provisions one Node background worker with a 1 GB persistent disk
 mounted at `data/`. The Blueprint deliberately deploys in shadow mode with the
 emergency stop active. During the initial Blueprint setup, Render prompts for
-the FPL credentials, manager ID, OpenAI key, and Discord webhook without storing
+the FPL credentials, manager ID, OpenAI key, Kapso credentials, WhatsApp
+recipient, approved template name, and optional Discord webhook without storing
 those secrets in Git.
+
+On Render, the ML observer automatically generates the correct next-gameweek
+feature sidecar from public FPL data, validates it against the current fixture
+schedule and model schema, and caches it on the persistent disk. The LLM layer
+uses structured output, a 30-second timeout, a persistent decision cache, and a
+75% approval threshold. Missing or invalid ML/LLM output is recorded and cannot
+authorize a mutation.
+
+Kapso sends an approved WhatsApp utility template for proactive plan and action
+updates. The delivery queue is serialized so `before` is submitted ahead of
+`after`, but neither send is awaited before an FPL request. A timeout, invalid
+credential, provider outage, or rejected WhatsApp message is logged and retried
+when transient; it never approves, blocks, cancels, retries, or changes an FPL
+action. Plan payloads are deduplicated within the worker process.
 
 Render must keep the worker at one instance because SQL.js and the mutation
 journal are single-writer. The worker exits after three consecutive failed
@@ -177,9 +200,68 @@ The portable model is emitted at
 `artifacts/ml/player-fixture-v1/model.json`; historical datasets and replay
 prediction CSVs remain local generated inputs under `data/`.
 
-For live observation, generate a public-data feature sidecar with
-`npm run ml:live-features`, set `FPL_ML_SHADOW_ENABLED=true` and point
-`FPL_ML_FEATURE_SIDECAR` at the printed file. ML remains a separate shadow
-observer: it does not alter optimizer projections, transfer plans, lineups,
-captaincy, chips, or authenticated API payloads. See `scripts/ml/README.md`
-for the feature contract, artifacts, validation results, and weekly workflow.
+For autonomous live observation, enable `FPL_ML_SHADOW_ENABLED=true` and
+`FPL_ML_AUTO_FEATURES=true`. The worker generates one validated, immutable
+sidecar per actionable gameweek and refreshes it if the public fixture schedule
+changes. `npm run ml:live-features` plus `FPL_ML_FEATURE_SIDECAR` remains the
+manual/offline alternative. ML remains a separate shadow observer: it does not
+alter optimizer projections, transfer plans, lineups, captaincy, chips, or
+authenticated API payloads. See `scripts/ml/README.md` for the feature contract
+and validation results.
+
+## LLM Decision Layer
+
+The autonomous worker sends only compact proposal data—never FPL credentials or
+session tokens—to a tool-free OpenAI reviewer. Zod structured output restricts
+the response to `approve` or `hold`, a supplied option ID, bounded confidence,
+risk, reasoning, and a fixed concern list. Code then verifies the option ID and
+minimum confidence again. Cached responses are keyed by the complete proposal,
+model, and threshold, so changed news, fixtures, or plans trigger a new review.
+
+```dotenv
+FPL_LLM_ENABLED=true
+FPL_LLM_REQUIRED_FOR_LIVE=true
+FPL_LLM_MODEL=gpt-5.4-nano
+FPL_LLM_MIN_CONFIDENCE=0.75
+```
+
+An LLM outage never becomes an implicit approval. When review is required, a
+timeout, refusal, malformed response, unknown option, low confidence, or hold
+verdict blocks the mutation while the worker continues monitoring.
+
+After configuring the OpenAI key, verify API connectivity and structured output
+without touching FPL:
+
+```bash
+npm run llm:smoke
+```
+
+## Kapso WhatsApp Observability
+
+Create and obtain approval for a WhatsApp utility template named
+`fpl_agent_update` with body text `FPL agent update:\n{{update}}`. Configure
+`update` as the single named body parameter, then set the Render secrets:
+
+```dotenv
+KAPSO_WHATSAPP_ENABLED=true
+KAPSO_API_KEY=<secret>
+KAPSO_PHONE_NUMBER_ID=<sender-phone-number-id>
+KAPSO_WHATSAPP_TO=<international-number-with-country-code>
+KAPSO_WHATSAPP_MODE=template
+KAPSO_WHATSAPP_TEMPLATE_NAME=fpl_agent_update
+KAPSO_WHATSAPP_LANGUAGE=en_US
+KAPSO_WHATSAPP_TEMPLATE_PARAMETER_NAME=update
+```
+
+The recipient is intentionally a secret rather than a value committed to the
+repository. After the approved template and secrets are configured, test only
+the notification path—without calling FPL—with:
+
+```bash
+npm run kapso:smoke
+```
+
+The runner sends a deduplicated gameweek plan and ordered `before`/`after`
+updates for transfer, lineup, captaincy/chip, and completed-gameweek outcomes.
+WhatsApp is strictly informational and has no code path into optimization,
+validation, LLM review, or authenticated FPL mutations.

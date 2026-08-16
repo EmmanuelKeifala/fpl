@@ -151,10 +151,16 @@ starts after the GW. It cannot provide forecasts to the optimizer or call any
 authenticated mutation endpoint. Invalid, stale, post-deadline, incomplete,
 or schedule-drifted artifacts are recorded as failed shadow runs.
 
-Generate a new sidecar after each completed GW. Only the next actionable GW
-matches the training history boundary; farther-horizon vectors would require
-unknown intervening results. Availability and timestamped news intentionally
-remain outside the fitted 96-feature vector.
+For an unattended worker, set `FPL_ML_AUTO_FEATURES=true` instead of a static
+`FPL_ML_FEATURE_SIDECAR`. The worker generates the next actionable GW sidecar,
+validates it against the model and current public fixture schedule, stores it in
+`FPL_ML_FEATURE_DIRECTORY`, and regenerates it if the schedule drifts. A failed
+or invalid generation is persisted as a failed shadow run and never reaches an
+execution path.
+
+Only the next actionable GW matches the training history boundary;
+farther-horizon vectors would require unknown intervening results. Availability
+and timestamped news intentionally remain outside the fitted 96-feature vector.
 
 ## Tests
 

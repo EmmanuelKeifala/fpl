@@ -1,5 +1,6 @@
 // Notifications for Autonomous Mode
 import type { Player } from '../api/types.js';
+import { hasKapsoWhatsAppConfig } from '../notifications/kapso-config.js';
 
 export interface NotificationPayload {
   type: 'transfer' | 'captain' | 'chip' | 'alert' | 'summary';
@@ -19,7 +20,8 @@ export interface NotificationDelivery {
 
 export function hasRemoteNotificationConfig(env: NodeJS.ProcessEnv = process.env): boolean {
   return Boolean(env.DISCORD_WEBHOOK_URL?.trim())
-    || Boolean(env.TELEGRAM_BOT_TOKEN?.trim() && env.TELEGRAM_CHAT_ID?.trim());
+    || Boolean(env.TELEGRAM_BOT_TOKEN?.trim() && env.TELEGRAM_CHAT_ID?.trim())
+    || hasKapsoWhatsAppConfig(env);
 }
 
 // Format notification as console log

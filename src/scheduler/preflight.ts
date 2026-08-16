@@ -6,6 +6,8 @@ import { getMutationOperations } from '../db/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
 import { getMutationPermission, getRunnerTimingConfig, getSafetyLimits } from './limits.js';
 import { hasRemoteNotificationConfig } from './notify.js';
+import { getLlmDecisionConfig } from '../llm/config.js';
+import { getKapsoWhatsAppConfig } from '../notifications/kapso-config.js';
 import {
   calculateCurrentLineupExpectedPoints,
   optimizeTransferPlan,
@@ -36,6 +38,15 @@ export async function runDeploymentPreflight(): Promise<DeploymentPreflightRepor
   const blockers: string[] = [];
   const warnings: string[] = [];
   const limits = getSafetyLimits();
+  const llmConfig = getLlmDecisionConfig();
+  let kapsoConfigured = false;
+  try {
+    kapsoConfigured = getKapsoWhatsAppConfig().enabled;
+  } catch (error) {
+    const detail = `Kapso WhatsApp configuration is invalid: ${errorMessage(error)}`;
+    if (limits.runMode === 'live') blockers.push(detail);
+    else warnings.push(detail);
+  }
   getRunnerTimingConfig();
   const client = getFPLClientFromEnv();
   let observerReady = false;
@@ -80,8 +91,19 @@ export async function runDeploymentPreflight(): Promise<DeploymentPreflightRepor
     blockers.push('No live mutation class is enabled');
   }
   if (limits.autoPlayChips) blockers.push('Automatic chip execution is not approved for deployment');
-  if (!hasRemoteNotificationConfig()) blockers.push('No Discord or Telegram alert channel is configured');
+  if (!hasRemoteNotificationConfig()) blockers.push('No remote alert channel is configured');
+  if (limits.runMode === 'live' && !kapsoConfigured) {
+    blockers.push('Kapso WhatsApp plan and action notifications are not configured');
+  } else if (limits.runMode === 'shadow' && !kapsoConfigured) {
+    warnings.push('Kapso WhatsApp plan and action notifications are not configured');
+  }
   if (limits.expectedManagerId === null) blockers.push('FPL_EXPECTED_MANAGER_ID is not configured');
+  if (limits.runMode === 'live' && llmConfig.requiredForLive) {
+    if (!llmConfig.enabled) blockers.push('The required live LLM decision reviewer is disabled');
+    else if (!llmConfig.apiKeyConfigured) blockers.push('The required live LLM decision reviewer has no OPENAI_API_KEY');
+  } else if (llmConfig.enabled && !llmConfig.apiKeyConfigured) {
+    warnings.push('LLM decision review is enabled but OPENAI_API_KEY is not configured');
+  }
   for (const { kind, permission } of permissions) {
     if (!permission.allowed
       && !permission.reason.includes('disabled')

@@ -20,6 +20,12 @@ AUTO_PLAY_CHIPS=false
 EMERGENCY_STOP=true
 MAX_TRANSFERS_PER_WEEK=1
 MAX_TRANSFER_HIT_COST=0
+FPL_ML_SHADOW_ENABLED=true
+FPL_ML_AUTO_FEATURES=true
+FPL_LLM_ENABLED=true
+FPL_LLM_REQUIRED_FOR_LIVE=true
+KAPSO_WHATSAPP_ENABLED=true
+KAPSO_WHATSAPP_MODE=template
 ```
 
 Run these checks from a clean build:
@@ -31,6 +37,8 @@ npm test
 npm run preflight:shadow
 npm run auto:once
 node dist/scheduler/runner.js --once
+npm run llm:smoke
+npm run kapso:smoke
 ```
 
 For Render, create a Blueprint from `render.yaml`, enter every prompted secret,
@@ -48,7 +56,17 @@ npm run preflight:live
 - All mutation flags default to false; emergency stop defaults to true.
 - `FPL_RUN_MODE=live` and `FPL_EXPECTED_MANAGER_ID` are required for mutation.
 - Authentication fails when the token belongs to a different manager.
-- LLM tools are analysis-only. Only the deployment worker can reach POST paths.
+- The tool-free LLM reviewer can approve only the deterministic option supplied
+  by code or return hold. It cannot create plans or reach POST paths.
+- Required live LLM review fails closed on missing credentials, timeout,
+  refusal, invalid schema/option, low confidence, or a hold verdict.
+- LLM inputs exclude FPL credentials and session tokens; reviews are cached by
+  the complete proposal/model/threshold on the persistent disk.
+- Kapso WhatsApp receives plans and ordered before/after status only. Its queue
+  is not awaited by FPL mutation paths, has no mutation tools, and cannot alter
+  optimizer, safety-gate, LLM, or POST behavior.
+- Transient Kapso failures retry within a bounded timeout; permanent failures
+  are logged without retrying or changing the corresponding FPL action.
 - Every mutation is bound to manager, season, gameweek, deadline, safety margin,
   and the exact pre-action team fingerprint.
 - Transfers validate selling/purchase prices, positions, budget, uniqueness,
@@ -68,6 +86,8 @@ npm run preflight:live
 - SQL.js holds a process-lifetime lock. Stop the worker before running another
   database-backed command against the same file.
 - ML remains a separate shadow observer with no optimizer or execution path.
+- ML feature sidecars are generated automatically per gameweek, validated
+  against the current public schedule and model schema, and regenerated on drift.
 
 ## Rollout Stages
 
@@ -92,6 +112,12 @@ Never enable multiple new mutation classes in the same gameweek.
   the proposed 90% promotion gate; it remains shadow-only.
 - News collection needs explicit source-freshness/degraded-state reporting.
 - Alert delivery needs a production canary and dead-man monitoring.
+- The Kapso API key, sender phone-number ID, recipient, and approved WhatsApp
+  utility-template name still need to be entered as Render secrets. Template
+  approval and one real `kapso:smoke` delivery remain external checks.
+- The production OpenAI credential and one real structured-review canary still
+  need verification on Render; mocked schema, cache, timeout, and fail-closed
+  behavior are covered locally.
 - SQL.js persistence requires the configured single Render worker and persistent
   disk; replicas remain unsupported.
 - Wildcard and Free Hit execution are intentionally unavailable.
