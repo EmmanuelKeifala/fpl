@@ -1,17 +1,24 @@
 // Database Client using sql.js (pure JavaScript SQLite - works on Android/Termux)
 import initSqlJs, { Database as SqlJsDatabase } from 'sql.js';
-import type { Decision, NewDecision, GameweekSnapshot, NewGameweekSnapshot } from './schema.js';
+import type {
+  GameweekSnapshot,
+  NewGameweekSnapshot,
+  NewScopedDecision,
+  ScopedDecision,
+} from './schema.js';
 import { fileURLToPath } from 'url';
 import { dirname, join } from 'path';
 import { readFileSync, writeFileSync, existsSync, mkdirSync, renameSync, unlinkSync } from 'fs';
 import type { Fixture, Player } from '../api/types.js';
 import type { ExpectedPoints } from '../engine/optimizer.js';
 import type { PlayerNewsSignal } from '../scheduler/news-signals.js';
+import { acquireExclusiveFileLock } from '../scheduler/process-lock.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
 const DB_PATH = process.env.FPL_DB_PATH || join(__dirname, '../../data/fpl.db');
+const DB_LOCK_PATH = process.env.FPL_DB_LOCK_PATH?.trim() || `${DB_PATH}.lock`;
 
 const decisionColumns = {
   id: 'id',
@@ -25,6 +32,12 @@ const decisionColumns = {
   rankAfter: 'rank_after',
   hitsTaken: 'hits_taken',
   createdAt: 'created_at',
+} as const;
+
+const scopedDecisionColumns = {
+  season: 'season',
+  managerId: 'manager_id',
+  ...decisionColumns,
 } as const;
 
 const snapshotColumns = {
@@ -43,6 +56,12 @@ const snapshotColumns = {
   captainId: 'captain_id',
   captainPoints: 'captain_points',
   createdAt: 'created_at',
+} as const;
+
+const scopedSnapshotColumns = {
+  season: 'season',
+  managerId: 'manager_id',
+  ...snapshotColumns,
 } as const;
 
 function toDbRow(
@@ -81,10 +100,37 @@ try {
 // Database instance
 let sqlDb: SqlJsDatabase | null = null;
 let dbReady = false;
+let databaseInitialization: Promise<SqlJsDatabase> | null = null;
+let releaseDatabaseLock: (() => void) | null = null;
+let databaseExitHandlerRegistered = false;
 
 async function initDatabase(): Promise<SqlJsDatabase> {
   if (sqlDb && dbReady) {
     return sqlDb;
+  }
+  if (databaseInitialization) return databaseInitialization;
+
+  databaseInitialization = initializeDatabase();
+  try {
+    return await databaseInitialization;
+  } catch (error) {
+    databaseInitialization = null;
+    sqlDb = null;
+    dbReady = false;
+    releaseDatabaseLock?.();
+    releaseDatabaseLock = null;
+    throw error;
+  }
+}
+
+async function initializeDatabase(): Promise<SqlJsDatabase> {
+  releaseDatabaseLock = acquireExclusiveFileLock(DB_LOCK_PATH, 'SQL.js database');
+  if (!databaseExitHandlerRegistered) {
+    databaseExitHandlerRegistered = true;
+    process.once('exit', () => {
+      releaseDatabaseLock?.();
+      releaseDatabaseLock = null;
+    });
   }
   
   const SQL = await initSqlJs();
@@ -101,6 +147,23 @@ async function initDatabase(): Promise<SqlJsDatabase> {
   sqlDb.run(`
     CREATE TABLE IF NOT EXISTS decisions (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gameweek INTEGER NOT NULL,
+      decision_type TEXT NOT NULL,
+      action TEXT NOT NULL,
+      reasoning TEXT,
+      expected_points REAL,
+      actual_points REAL,
+      rank_before INTEGER,
+      rank_after INTEGER,
+      hits_taken INTEGER DEFAULT 0,
+      created_at INTEGER
+    )
+  `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS decisions_scoped (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season TEXT NOT NULL,
+      manager_id INTEGER NOT NULL,
       gameweek INTEGER NOT NULL,
       decision_type TEXT NOT NULL,
       action TEXT NOT NULL,
@@ -133,13 +196,39 @@ async function initDatabase(): Promise<SqlJsDatabase> {
       created_at INTEGER
     )
   `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS gameweek_snapshots_scoped (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season TEXT NOT NULL,
+      manager_id INTEGER NOT NULL,
+      gameweek INTEGER NOT NULL,
+      total_points INTEGER,
+      overall_rank INTEGER,
+      gameweek_points INTEGER,
+      gameweek_rank INTEGER,
+      team_value REAL,
+      bank REAL,
+      chips_used TEXT,
+      transfers_made INTEGER,
+      transfers_cost INTEGER,
+      points_on_bench INTEGER,
+      captain_id INTEGER,
+      captain_points INTEGER,
+      created_at INTEGER,
+      UNIQUE (season, manager_id, gameweek)
+    )
+  `);
   
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_decisions_gameweek ON decisions(gameweek)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_decisions_type ON decisions(decision_type)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_scoped_decisions_lookup ON decisions_scoped(season, manager_id, gameweek)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_scoped_decisions_type ON decisions_scoped(season, manager_id, decision_type)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_scoped_snapshots_lookup ON gameweek_snapshots_scoped(season, manager_id, gameweek)`);
 
   sqlDb.run(`
     CREATE TABLE IF NOT EXISTS player_observations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season TEXT,
       gameweek INTEGER NOT NULL,
       player_id INTEGER NOT NULL,
       observed_at INTEGER NOT NULL,
@@ -149,6 +238,7 @@ async function initDatabase(): Promise<SqlJsDatabase> {
   sqlDb.run(`
     CREATE TABLE IF NOT EXISTS fixture_observations (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season TEXT,
       gameweek INTEGER NOT NULL,
       fixture_id INTEGER NOT NULL,
       observed_at INTEGER NOT NULL,
@@ -158,6 +248,7 @@ async function initDatabase(): Promise<SqlJsDatabase> {
   sqlDb.run(`
     CREATE TABLE IF NOT EXISTS player_forecasts (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season TEXT,
       gameweek INTEGER NOT NULL,
       player_id INTEGER NOT NULL,
       horizon INTEGER NOT NULL,
@@ -171,6 +262,24 @@ async function initDatabase(): Promise<SqlJsDatabase> {
   sqlDb.run(`
     CREATE TABLE IF NOT EXISTS player_news_signals (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
+      gameweek INTEGER NOT NULL,
+      player_id INTEGER NOT NULL,
+      signal_type TEXT NOT NULL,
+      source TEXT NOT NULL,
+      source_tier INTEGER NOT NULL,
+      confidence REAL NOT NULL,
+      minutes_multiplier REAL NOT NULL,
+      published_at INTEGER,
+      retrieved_at INTEGER NOT NULL,
+      expires_at INTEGER NOT NULL,
+      evidence TEXT NOT NULL,
+      timestamp_verified INTEGER NOT NULL
+    )
+  `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS player_news_signals_scoped (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      season TEXT NOT NULL,
       gameweek INTEGER NOT NULL,
       player_id INTEGER NOT NULL,
       signal_type TEXT NOT NULL,
@@ -232,16 +341,40 @@ async function initDatabase(): Promise<SqlJsDatabase> {
       FOREIGN KEY (run_id) REFERENCES ml_shadow_forecast_runs(id)
     )
   `);
+  sqlDb.run(`
+    CREATE TABLE IF NOT EXISTS mutation_operations (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      operation_key TEXT NOT NULL UNIQUE,
+      manager_id INTEGER NOT NULL,
+      season TEXT NOT NULL,
+      gameweek INTEGER NOT NULL,
+      kind TEXT NOT NULL,
+      payload_hash TEXT NOT NULL,
+      pre_state_hash TEXT NOT NULL,
+      status TEXT NOT NULL,
+      message TEXT,
+      created_at INTEGER NOT NULL,
+      updated_at INTEGER NOT NULL
+    )
+  `);
   ensureColumn(sqlDb, 'ml_shadow_forecast_runs', 'completed_at', 'INTEGER');
   ensureColumn(sqlDb, 'ml_shadow_forecast_runs', 'feature_sidecar_path', 'TEXT');
   ensureColumn(sqlDb, 'ml_shadow_player_forecasts', 'ml_expected_appearances', 'REAL');
   ensureColumn(sqlDb, 'ml_shadow_player_forecasts', 'ml_expected_starts', 'REAL');
+  ensureColumn(sqlDb, 'player_observations', 'season', 'TEXT');
+  ensureColumn(sqlDb, 'fixture_observations', 'season', 'TEXT');
+  ensureColumn(sqlDb, 'player_forecasts', 'season', 'TEXT');
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_observations_lookup ON player_observations(player_id, id)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_fixture_observations_lookup ON fixture_observations(fixture_id, id)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_forecasts_gameweek ON player_forecasts(gameweek, player_id, horizon)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_observations_season_lookup ON player_observations(season, player_id, id)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_fixture_observations_season_lookup ON fixture_observations(season, fixture_id, id)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_forecasts_season_gameweek ON player_forecasts(season, gameweek, player_id, horizon)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_player_news_signals_gameweek ON player_news_signals(gameweek, player_id)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_scoped_news_signals_gameweek ON player_news_signals_scoped(season, gameweek, player_id)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_ml_shadow_runs_lookup ON ml_shadow_forecast_runs(season, gameweek, deadline_at, captured_at)`);
   sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_ml_shadow_forecasts_player ON ml_shadow_player_forecasts(player_id, run_id)`);
+  sqlDb.run(`CREATE INDEX IF NOT EXISTS idx_mutation_operations_manager ON mutation_operations(manager_id, status, updated_at)`);
   
   dbReady = true;
   saveDatabase();
@@ -249,18 +382,20 @@ async function initDatabase(): Promise<SqlJsDatabase> {
   return sqlDb;
 }
 
-export async function savePlayerNewsSignals(signals: PlayerNewsSignal[]): Promise<number> {
+export async function savePlayerNewsSignals(season: string, signals: PlayerNewsSignal[]): Promise<number> {
   if (signals.length === 0) return 0;
+  validateSeason(season);
   const db = await initDatabase();
   const statement = db.prepare(`
-    INSERT INTO player_news_signals (
-      gameweek, player_id, signal_type, source, source_tier, confidence,
+    INSERT INTO player_news_signals_scoped (
+      season, gameweek, player_id, signal_type, source, source_tier, confidence,
       minutes_multiplier, published_at, retrieved_at, expires_at, evidence, timestamp_verified
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   try {
     for (const signal of signals) {
       statement.run([
+        season,
         signal.gameweek,
         signal.playerId,
         signal.type,
@@ -302,8 +437,157 @@ function ensureColumn(db: SqlJsDatabase, table: string, column: string, definiti
   db.run(`ALTER TABLE ${table} ADD COLUMN ${column} ${definition}`);
 }
 
+function validateSeason(season: string): void {
+  if (!/^\d{4}-\d{4}$/.test(season)) throw new Error(`Invalid season ${season}`);
+}
+
+function forecastSnapshotHours(): number {
+  const raw = (process.env.FORECAST_SNAPSHOT_HOURS ?? '6').trim();
+  if (!/^\d+$/.test(raw)) throw new Error('FORECAST_SNAPSHOT_HOURS must be an integer');
+  const value = Number(raw);
+  if (value < 1 || value > 168) throw new Error('FORECAST_SNAPSHOT_HOURS must be between 1 and 168');
+  return value;
+}
+
+export type MutationOperationStatus = 'planned' | 'in_flight' | 'confirmed' | 'rejected' | 'unknown';
+
+export interface MutationOperationRecord {
+  id: number;
+  operationKey: string;
+  managerId: number;
+  season: string;
+  gameweek: number;
+  kind: 'transfer' | 'lineup';
+  status: MutationOperationStatus;
+  message: string | null;
+}
+
+export async function beginMutationOperation(input: {
+  operationKey: string;
+  managerId: number;
+  season: string;
+  gameweek: number;
+  kind: 'transfer' | 'lineup';
+  payloadHash: string;
+  preStateHash: string;
+}): Promise<{ record: MutationOperationRecord; duplicate: boolean }> {
+  const db = await initDatabase();
+  const existing = readMutationOperation(db, 'operation_key = ?', [input.operationKey]);
+  if (existing) return { record: existing, duplicate: true };
+
+  const blocking = readMutationOperation(
+    db,
+    `manager_id = ? AND status IN ('planned', 'in_flight', 'unknown')`,
+    [input.managerId]
+  );
+  if (blocking) {
+    throw new Error(`Mutation operation ${blocking.id} is unresolved (${blocking.status}): ${blocking.message ?? 'no detail'}`);
+  }
+
+  const now = Date.now();
+  db.run(
+    `INSERT INTO mutation_operations (
+      operation_key, manager_id, season, gameweek, kind, payload_hash,
+      pre_state_hash, status, message, created_at, updated_at
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, 'planned', NULL, ?, ?)`,
+    [
+      input.operationKey,
+      input.managerId,
+      input.season,
+      input.gameweek,
+      input.kind,
+      input.payloadHash,
+      input.preStateHash,
+      now,
+      now,
+    ]
+  );
+  saveDatabase();
+  const record = readMutationOperation(db, 'operation_key = ?', [input.operationKey]);
+  if (!record) throw new Error('Failed to persist mutation operation');
+  return { record, duplicate: false };
+}
+
+export async function updateMutationOperation(
+  id: number,
+  status: MutationOperationStatus,
+  message: string | null
+): Promise<void> {
+  const db = await initDatabase();
+  db.run(
+    'UPDATE mutation_operations SET status = ?, message = ?, updated_at = ? WHERE id = ?',
+    [status, message, Date.now(), id]
+  );
+  if (db.getRowsModified() !== 1) throw new Error(`Mutation operation ${id} does not exist`);
+  saveDatabase();
+}
+
+export async function getMutationOperations(managerId?: number): Promise<MutationOperationRecord[]> {
+  const db = await initDatabase();
+  const result = managerId === undefined
+    ? db.exec('SELECT id, operation_key, manager_id, season, gameweek, kind, status, message FROM mutation_operations ORDER BY id')
+    : db.exec(
+      'SELECT id, operation_key, manager_id, season, gameweek, kind, status, message FROM mutation_operations WHERE manager_id = ? ORDER BY id',
+      [managerId]
+    );
+  return (result[0]?.values ?? []).map(row => mutationOperationFromRow(row));
+}
+
+export async function resolveMutationOperation(
+  id: number,
+  status: 'confirmed' | 'rejected',
+  message: string
+): Promise<void> {
+  if (!Number.isInteger(id) || id <= 0) throw new Error('Mutation operation id must be a positive integer');
+  if (!message.trim()) throw new Error('Mutation resolution requires verification notes');
+  const db = await initDatabase();
+  const current = readMutationOperation(db, 'id = ?', [id]);
+  if (!current) throw new Error(`Mutation operation ${id} does not exist`);
+  if (current.status === 'confirmed' || current.status === 'rejected') {
+    throw new Error(`Mutation operation ${id} is already resolved as ${current.status}`);
+  }
+  await updateMutationOperation(id, status, message.trim());
+}
+
+function readMutationOperation(
+  db: SqlJsDatabase,
+  where: string,
+  params: (string | number)[]
+): MutationOperationRecord | null {
+  const row = db.exec(
+    `SELECT id, operation_key, manager_id, season, gameweek, kind, status, message
+     FROM mutation_operations WHERE ${where} ORDER BY id DESC LIMIT 1`,
+    params
+  )[0]?.values[0];
+  return row ? mutationOperationFromRow(row) : null;
+}
+
+function mutationOperationFromRow(row: unknown[]): MutationOperationRecord {
+  return {
+    id: Number(row[0]),
+    operationKey: String(row[1]),
+    managerId: Number(row[2]),
+    season: String(row[3]),
+    gameweek: Number(row[4]),
+    kind: String(row[5]) as MutationOperationRecord['kind'],
+    status: String(row[6]) as MutationOperationStatus,
+    message: row[7] === null ? null : String(row[7]),
+  };
+}
+
 // Decision CRUD operations
-export async function logDecision(decision: NewDecision): Promise<Decision> {
+export interface DecisionScope {
+  season: string;
+  managerId: number;
+}
+
+function validateDecisionScope(scope: DecisionScope): void {
+  validateSeason(scope.season);
+  if (!Number.isInteger(scope.managerId) || scope.managerId <= 0) throw new Error('Decision manager id is invalid');
+}
+
+export async function logDecision(decision: NewScopedDecision): Promise<ScopedDecision> {
+  validateDecisionScope(decision);
   const db = await initDatabase();
   
   // Convert Date to timestamp if needed
@@ -312,40 +596,44 @@ export async function logDecision(decision: NewDecision): Promise<Decision> {
     (values as Record<string, unknown>).createdAt = values.createdAt.getTime();
   }
   
-  const dbValues = toDbRow(values as Record<string, unknown>, decisionColumns);
+  const dbValues = toDbRow(values as Record<string, unknown>, scopedDecisionColumns);
   const cols = Object.keys(dbValues).join(', ');
   const placeholders = Object.keys(dbValues).map(() => '?').join(', ');
   const vals = Object.values(dbValues);
   
-  db.run(`INSERT INTO decisions (${cols}) VALUES (${placeholders})`, vals as (string | number | null)[]);
+  db.run(`INSERT INTO decisions_scoped (${cols}) VALUES (${placeholders})`, vals as (string | number | null)[]);
   saveDatabase();
   
-  const result = db.exec('SELECT id FROM decisions ORDER BY id DESC LIMIT 1');
+  const result = db.exec('SELECT id FROM decisions_scoped ORDER BY id DESC LIMIT 1');
   const id = result[0]?.values[0]?.[0] as number;
   
-  return { ...decision, id } as Decision;
+  return { ...decision, id } as ScopedDecision;
 }
 
 export async function updateDecisionOutcome(
+  scope: DecisionScope,
   id: number,
   actualPoints: number,
   rankAfter: number
 ): Promise<void> {
+  validateDecisionScope(scope);
   const db = await initDatabase();
   db.run(
-    `UPDATE decisions SET actual_points = ?, rank_after = ? WHERE id = ?`,
-    [actualPoints, rankAfter, id]
+    `UPDATE decisions_scoped SET actual_points = ?, rank_after = ? WHERE id = ? AND season = ? AND manager_id = ?`,
+    [actualPoints, rankAfter, id, scope.season, scope.managerId]
   );
+  if (db.getRowsModified() !== 1) throw new Error(`Scoped decision ${id} does not exist`);
   saveDatabase();
 }
 
-export async function getDecisions(gameweek?: number): Promise<Decision[]> {
+export async function getDecisions(scope: DecisionScope, gameweek?: number): Promise<ScopedDecision[]> {
+  validateDecisionScope(scope);
   const db = await initDatabase();
-  let sql = 'SELECT * FROM decisions';
-  const params: number[] = [];
+  let sql = 'SELECT * FROM decisions_scoped WHERE season = ? AND manager_id = ?';
+  const params: (string | number)[] = [scope.season, scope.managerId];
   
   if (gameweek) {
-    sql += ' WHERE gameweek = ?';
+    sql += ' AND gameweek = ?';
     params.push(gameweek);
   }
   
@@ -355,26 +643,32 @@ export async function getDecisions(gameweek?: number): Promise<Decision[]> {
   if (!result[0]) return [];
   
   return result[0].values.map((row: unknown[]) =>
-    fromDbRow(result[0].columns, row, decisionColumns) as unknown as Decision
+    fromDbRow(result[0].columns, row, scopedDecisionColumns) as unknown as ScopedDecision
   );
 }
 
-export async function getDecisionsByType(type: string): Promise<Decision[]> {
+export async function getDecisionsByType(scope: DecisionScope, type: string): Promise<ScopedDecision[]> {
+  validateDecisionScope(scope);
   const db = await initDatabase();
   const result = db.exec(
-    `SELECT * FROM decisions WHERE decision_type = ? ORDER BY created_at DESC LIMIT 50`,
-    [type]
+    `SELECT * FROM decisions_scoped WHERE season = ? AND manager_id = ? AND decision_type = ? ORDER BY created_at DESC LIMIT 50`,
+    [scope.season, scope.managerId, type]
   );
   
   if (!result[0]) return [];
   
   return result[0].values.map((row: unknown[]) =>
-    fromDbRow(result[0].columns, row, decisionColumns) as unknown as Decision
+    fromDbRow(result[0].columns, row, scopedDecisionColumns) as unknown as ScopedDecision
   );
 }
 
 // Gameweek Snapshot CRUD
-export async function saveGameweekSnapshot(snapshot: NewGameweekSnapshot): Promise<GameweekSnapshot> {
+export type ScopedGameweekSnapshotInput = NewGameweekSnapshot & { season: string; managerId: number };
+export type ScopedGameweekSnapshot = GameweekSnapshot & { season: string; managerId: number };
+
+export async function saveGameweekSnapshot(snapshot: ScopedGameweekSnapshotInput): Promise<ScopedGameweekSnapshot> {
+  validateSeason(snapshot.season);
+  if (!Number.isInteger(snapshot.managerId) || snapshot.managerId <= 0) throw new Error('Snapshot manager id is invalid');
   const db = await initDatabase();
   
   // Convert Date to timestamp if needed
@@ -384,59 +678,83 @@ export async function saveGameweekSnapshot(snapshot: NewGameweekSnapshot): Promi
   }
   
   // Check if exists
-  const existing = db.exec(`SELECT id FROM gameweek_snapshots WHERE gameweek = ${snapshot.gameweek}`);
+  const existing = db.exec(
+    'SELECT id FROM gameweek_snapshots_scoped WHERE season = ? AND manager_id = ? AND gameweek = ?',
+    [snapshot.season, snapshot.managerId, snapshot.gameweek]
+  );
   
   if (existing[0]?.values?.length > 0) {
     // Update
-    const dbValues = toDbRow(values as Record<string, unknown>, snapshotColumns);
-    const entries = Object.entries(dbValues).filter(([k]) => k !== 'id' && k !== 'gameweek');
+    const dbValues = toDbRow(values as Record<string, unknown>, scopedSnapshotColumns);
+    const entries = Object.entries(dbValues).filter(([k]) => !['id', 'season', 'manager_id', 'gameweek'].includes(k));
     const setClause = entries
       .map(([k]) => `${k} = ?`)
       .join(', ');
     const vals = entries.map(([, value]) => value) as (string | number | null)[];
-    db.run(`UPDATE gameweek_snapshots SET ${setClause} WHERE gameweek = ?`, [...vals, snapshot.gameweek]);
+    db.run(
+      `UPDATE gameweek_snapshots_scoped SET ${setClause} WHERE season = ? AND manager_id = ? AND gameweek = ?`,
+      [...vals, snapshot.season, snapshot.managerId, snapshot.gameweek]
+    );
   } else {
     // Insert
-    const dbValues = toDbRow(values as Record<string, unknown>, snapshotColumns);
+    const dbValues = toDbRow(values as Record<string, unknown>, scopedSnapshotColumns);
     const cols = Object.keys(dbValues).join(', ');
     const placeholders = Object.keys(dbValues).map(() => '?').join(', ');
-    db.run(`INSERT INTO gameweek_snapshots (${cols}) VALUES (${placeholders})`, Object.values(dbValues) as (string | number | null)[]);
+    db.run(`INSERT INTO gameweek_snapshots_scoped (${cols}) VALUES (${placeholders})`, Object.values(dbValues) as (string | number | null)[]);
   }
   
   saveDatabase();
-  return snapshot as GameweekSnapshot;
+  return snapshot as ScopedGameweekSnapshot;
 }
 
-export async function getGameweekSnapshot(gameweek: number): Promise<GameweekSnapshot | undefined> {
+export async function getGameweekSnapshot(
+  season: string,
+  managerId: number,
+  gameweek: number
+): Promise<ScopedGameweekSnapshot | undefined> {
+  validateSeason(season);
   const db = await initDatabase();
-  const result = db.exec(`SELECT * FROM gameweek_snapshots WHERE gameweek = ${gameweek}`);
+  const result = db.exec(
+    'SELECT * FROM gameweek_snapshots_scoped WHERE season = ? AND manager_id = ? AND gameweek = ?',
+    [season, managerId, gameweek]
+  );
   
   if (!result[0] || !result[0].values[0]) return undefined;
   
   const row = result[0].values[0];
-  return fromDbRow(result[0].columns, row, snapshotColumns) as unknown as GameweekSnapshot;
+  return fromDbRow(result[0].columns, row, scopedSnapshotColumns) as unknown as ScopedGameweekSnapshot;
 }
 
-export async function getRecentSnapshots(limit = 10): Promise<GameweekSnapshot[]> {
+export async function getRecentSnapshots(
+  season: string,
+  managerId: number,
+  limit = 10
+): Promise<ScopedGameweekSnapshot[]> {
+  validateDecisionScope({ season, managerId });
   const db = await initDatabase();
-  const result = db.exec(`SELECT * FROM gameweek_snapshots ORDER BY gameweek DESC LIMIT ${limit}`);
+  const result = db.exec(
+    'SELECT * FROM gameweek_snapshots_scoped WHERE season = ? AND manager_id = ? ORDER BY created_at DESC LIMIT ?',
+    [season, managerId, limit]
+  );
   
   if (!result[0]) return [];
   
   return result[0].values.map((row: unknown[]) =>
-    fromDbRow(result[0].columns, row, snapshotColumns) as unknown as GameweekSnapshot
+    fromDbRow(result[0].columns, row, scopedSnapshotColumns) as unknown as ScopedGameweekSnapshot
   );
 }
 
 export async function saveIntelligenceObservations(
+  season: string,
   gameweek: number,
   players: Player[],
   fixtures: Fixture[],
   observedAt: Date = new Date()
 ): Promise<{ players: number; fixtures: number }> {
+  validateSeason(season);
   const db = await initDatabase();
-  const latestPlayerStates = latestStates(db, 'player_observations', 'player_id');
-  const latestFixtureStates = latestStates(db, 'fixture_observations', 'fixture_id');
+  const latestPlayerStates = latestStates(db, 'player_observations', 'player_id', season);
+  const latestFixtureStates = latestStates(db, 'fixture_observations', 'fixture_id', season);
   let playerChanges = 0;
   let fixtureChanges = 0;
   db.run('BEGIN TRANSACTION');
@@ -461,8 +779,8 @@ export async function saveIntelligenceObservations(
       });
       if (latestPlayerStates.get(player.id) === state) continue;
       db.run(
-        'INSERT INTO player_observations (gameweek, player_id, observed_at, state_json) VALUES (?, ?, ?, ?)',
-        [gameweek, player.id, observedAt.getTime(), state]
+        'INSERT INTO player_observations (season, gameweek, player_id, observed_at, state_json) VALUES (?, ?, ?, ?, ?)',
+        [season, gameweek, player.id, observedAt.getTime(), state]
       );
       playerChanges++;
     }
@@ -482,8 +800,8 @@ export async function saveIntelligenceObservations(
       });
       if (latestFixtureStates.get(fixture.id) === state) continue;
       db.run(
-        'INSERT INTO fixture_observations (gameweek, fixture_id, observed_at, state_json) VALUES (?, ?, ?, ?)',
-        [gameweek, fixture.id, observedAt.getTime(), state]
+        'INSERT INTO fixture_observations (season, gameweek, fixture_id, observed_at, state_json) VALUES (?, ?, ?, ?, ?)',
+        [season, gameweek, fixture.id, observedAt.getTime(), state]
       );
       fixtureChanges++;
     }
@@ -497,17 +815,19 @@ export async function saveIntelligenceObservations(
 }
 
 export async function saveForecastSnapshot(
+  season: string,
   gameweek: number,
   horizon: number,
   forecasts: ExpectedPoints[],
   force: boolean = false,
   capturedAt: Date = new Date()
 ): Promise<number> {
+  validateSeason(season);
   const db = await initDatabase();
-  const intervalHours = force ? 1 : Math.max(1, parseInt(process.env.FORECAST_SNAPSHOT_HOURS || '6'));
+  const intervalHours = force ? 1 : forecastSnapshotHours();
   const latest = db.exec(
-    'SELECT MAX(captured_at) FROM player_forecasts WHERE gameweek = ? AND horizon = ?',
-    [gameweek, horizon]
+    'SELECT MAX(captured_at) FROM player_forecasts WHERE season = ? AND gameweek = ? AND horizon = ?',
+    [season, gameweek, horizon]
   )[0]?.values[0]?.[0];
   if (typeof latest === 'number' && capturedAt.getTime() - latest < intervalHours * 60 * 60 * 1000) return 0;
 
@@ -516,9 +836,9 @@ export async function saveForecastSnapshot(
     for (const forecast of forecasts) {
       db.run(
         `INSERT INTO player_forecasts
-          (gameweek, player_id, horizon, predicted_points, confidence, expected_minutes, captured_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?)`,
-        [gameweek, forecast.playerId, horizon, forecast.nextGW, forecast.confidence, forecast.breakdown.expectedMinutes, capturedAt.getTime()]
+          (season, gameweek, player_id, horizon, predicted_points, confidence, expected_minutes, captured_at)
+          VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+        [season, gameweek, forecast.playerId, horizon, forecast.nextGW, forecast.confidence, forecast.breakdown.expectedMinutes, capturedAt.getTime()]
       );
     }
     db.run('COMMIT');
@@ -531,31 +851,38 @@ export async function saveForecastSnapshot(
 }
 
 export async function isForecastSnapshotDue(
+  season: string,
   gameweek: number,
   horizon: number,
   force: boolean = false,
   now: Date = new Date()
 ): Promise<boolean> {
+  validateSeason(season);
   const db = await initDatabase();
-  const intervalHours = force ? 1 : Math.max(1, parseInt(process.env.FORECAST_SNAPSHOT_HOURS || '6'));
+  const intervalHours = force ? 1 : forecastSnapshotHours();
   const latest = db.exec(
-    'SELECT MAX(captured_at) FROM player_forecasts WHERE gameweek = ? AND horizon = ?',
-    [gameweek, horizon]
+    'SELECT MAX(captured_at) FROM player_forecasts WHERE season = ? AND gameweek = ? AND horizon = ?',
+    [season, gameweek, horizon]
   )[0]?.values[0]?.[0];
   return typeof latest !== 'number' || now.getTime() - latest >= intervalHours * 60 * 60 * 1000;
 }
 
-export async function reconcileForecastOutcomes(gameweek: number, actualPoints: Map<number, number>): Promise<number> {
+export async function reconcileForecastOutcomes(
+  season: string,
+  gameweek: number,
+  actualPoints: Map<number, number>
+): Promise<number> {
+  validateSeason(season);
   const db = await initDatabase();
   let updated = 0;
   db.run('BEGIN TRANSACTION');
   try {
     for (const [playerId, points] of actualPoints) {
       db.run(
-        'UPDATE player_forecasts SET actual_points = ? WHERE gameweek = ? AND player_id = ? AND horizon = 1 AND actual_points IS NULL',
-        [points, gameweek, playerId]
+        'UPDATE player_forecasts SET actual_points = ? WHERE season = ? AND gameweek = ? AND player_id = ? AND horizon = 1 AND actual_points IS NULL',
+        [points, season, gameweek, playerId]
       );
-      updated++;
+      updated += db.getRowsModified();
     }
     db.run('COMMIT');
   } catch (error) {
@@ -566,28 +893,30 @@ export async function reconcileForecastOutcomes(gameweek: number, actualPoints: 
   return updated;
 }
 
-export async function getForecastAccuracy(gameweek?: number): Promise<{
+export async function getForecastAccuracy(season: string, gameweek?: number): Promise<{
   samples: number;
   meanAbsoluteError: number;
   bias: number;
   rootMeanSquaredError: number;
 }> {
+  validateSeason(season);
   const db = await initDatabase();
   const where = gameweek === undefined ? '' : 'AND forecast.gameweek = ?';
-  const params = gameweek === undefined ? [] : [gameweek];
+  const params: (string | number)[] = gameweek === undefined ? [season, season] : [season, season, gameweek];
   const result = db.exec(`
     SELECT forecast.predicted_points, forecast.actual_points
     FROM player_forecasts forecast
     INNER JOIN (
-      SELECT gameweek, player_id, MAX(captured_at) AS latest_capture
-      FROM player_forecasts
-      WHERE horizon = 1
-      GROUP BY gameweek, player_id
-    ) latest
-      ON forecast.gameweek = latest.gameweek
+       SELECT season, gameweek, player_id, MAX(captured_at) AS latest_capture
+       FROM player_forecasts
+       WHERE season = ? AND horizon = 1
+       GROUP BY season, gameweek, player_id
+     ) latest
+       ON forecast.season = latest.season
+       AND forecast.gameweek = latest.gameweek
       AND forecast.player_id = latest.player_id
       AND forecast.captured_at = latest.latest_capture
-    WHERE forecast.horizon = 1 AND forecast.actual_points IS NOT NULL ${where}
+    WHERE forecast.season = ? AND forecast.horizon = 1 AND forecast.actual_points IS NOT NULL ${where}
   `, params);
   const rows = result[0]?.values ?? [];
   if (rows.length === 0) return { samples: 0, meanAbsoluteError: 0, bias: 0, rootMeanSquaredError: 0 };
@@ -964,13 +1293,21 @@ function validateMlShadowForecastRun(input: MlShadowForecastRunInput): void {
   }
 }
 
-function latestStates(db: SqlJsDatabase, table: string, idColumn: string): Map<number, string> {
+function latestStates(
+  db: SqlJsDatabase,
+  table: string,
+  idColumn: string,
+  season: string
+): Map<number, string> {
   const result = db.exec(`
     SELECT current.${idColumn}, current.state_json
     FROM ${table} current
-    INNER JOIN (SELECT ${idColumn}, MAX(id) AS max_id FROM ${table} GROUP BY ${idColumn}) latest
+    INNER JOIN (
+      SELECT ${idColumn}, MAX(id) AS max_id FROM ${table}
+      WHERE season = ? GROUP BY ${idColumn}
+    ) latest
       ON current.id = latest.max_id
-  `);
+  `, [season]);
   if (!result[0]) return new Map();
   return new Map(result[0].values.map(row => [Number(row[0]), String(row[1])]));
 }
@@ -989,9 +1326,11 @@ export interface RollingPlayerProfile {
 }
 
 export async function getRollingPlayerProfiles(
+  season: string,
   targetGameweek: number,
   window: number = 6
 ): Promise<Map<number, RollingPlayerProfile>> {
+  validateSeason(season);
   const db = await initDatabase();
   const result = db.exec(`
     SELECT observation.player_id, observation.gameweek, observation.state_json
@@ -999,11 +1338,11 @@ export async function getRollingPlayerProfiles(
     INNER JOIN (
       SELECT player_id, gameweek, MAX(id) AS max_id
       FROM player_observations
-      WHERE gameweek <= ?
+       WHERE season = ? AND gameweek <= ?
       GROUP BY player_id, gameweek
     ) latest ON observation.id = latest.max_id
     ORDER BY observation.player_id, observation.gameweek DESC
-  `, [targetGameweek]);
+  `, [season, targetGameweek]);
   const rows = result[0]?.values ?? [];
   const histories = new Map<number, { gameweek: number; state: Record<string, unknown> }[]>();
   for (const row of rows) {
@@ -1055,24 +1394,40 @@ export interface PerformanceStats {
   captainSuccessRate: number;
 }
 
-export async function getPerformanceStats(fromGW?: number, toGW?: number): Promise<PerformanceStats> {
-  let decisions: Decision[] = [];
+export async function getPerformanceStats(
+  scope: DecisionScope,
+  fromGW?: number,
+  toGW?: number
+): Promise<PerformanceStats> {
+  validateDecisionScope(scope);
+  let decisions: ScopedDecision[] = [];
   
-  if (fromGW && toGW) {
+  if (fromGW || toGW) {
     const db = await initDatabase();
+    const clauses = ['season = ?', 'manager_id = ?'];
+    const params: (string | number)[] = [scope.season, scope.managerId];
+    if (fromGW) {
+      clauses.push('gameweek >= ?');
+      params.push(fromGW);
+    }
+    if (toGW) {
+      clauses.push('gameweek <= ?');
+      params.push(toGW);
+    }
     const result = db.exec(
-      `SELECT * FROM decisions WHERE gameweek >= ${fromGW} AND gameweek <= ${toGW}`
+      `SELECT * FROM decisions_scoped WHERE ${clauses.join(' AND ')}`,
+      params
     );
     if (result[0]) {
       decisions = result[0].values.map((row: unknown[]) =>
-        fromDbRow(result[0].columns, row, decisionColumns) as unknown as Decision
+        fromDbRow(result[0].columns, row, scopedDecisionColumns) as unknown as ScopedDecision
       );
     }
   } else {
-    decisions = await getDecisions();
+    decisions = await getDecisions(scope);
   }
   
-  const snapshots = await getRecentSnapshots(38);
+  const snapshots = await getRecentSnapshots(scope.season, scope.managerId, 38);
   
   const totalDecisions = decisions.length;
   const successfulDecisions = decisions.filter(d => 

@@ -100,8 +100,8 @@ class OptimizationEngine {
     this.currentGW = currentEvent?.id || 1;
 
     const targetGameweek = bootstrap.events.find(event => new Date(event.deadline_time) > new Date())?.id ?? this.currentGW;
-    this.rollingProfiles = await getRollingPlayerProfiles(targetGameweek);
-    const calibration = await getForecastAccuracy();
+    this.rollingProfiles = await getRollingPlayerProfiles(this.seasonConfig.season, targetGameweek);
+    const calibration = await getForecastAccuracy(this.seasonConfig.season);
     if (calibration.samples >= 100) {
       const calibrationReliability = Math.min(1, calibration.samples / 1000);
       this.calibrationBias = Math.max(-1, Math.min(1, calibration.bias)) * calibrationReliability;
@@ -129,22 +129,39 @@ class OptimizationEngine {
     const formFactor = Math.max(0.5, Math.min(1.5, 0.8 + (form / 10)));
     
     const completedGameweeks = Math.max(0, this.gameweeks.filter(gameweek => gameweek.finished).length);
-    const observedMinutes = completedGameweeks > 0 ? player.minutes / completedGameweeks : 0;
-    const minutesReliability = Math.min(1, completedGameweeks / 6);
-    const positionMinutesPrior = player.element_type === 1 ? 72 : 65;
-    const seasonExpectedMinutes = Math.max(0, Math.min(90,
-      observedMinutes * minutesReliability + positionMinutesPrior * (1 - minutesReliability)
-    ));
+    const pointsPerGame = Number(player.points_per_game) || 0;
+    const totalPoints = Number(player.total_points) || 0;
+    const inferredAppearances = pointsPerGame > 0
+      ? Math.min(38, Math.max(player.starts || 0, totalPoints / pointsPerGame))
+      : Math.min(38, Math.max(player.starts || 0, player.minutes / 60));
+    const officialExpectedPoints = Number(player.ep_next);
+    const officialRoleSignal = Number.isFinite(officialExpectedPoints)
+      ? Math.max(0.05, Math.min(1, officialExpectedPoints / 4))
+      : 0.5;
+    const roleEvidence = Math.min(1, inferredAppearances / 20);
+    const eventDenominator = completedGameweeks > 0 ? completedGameweeks : 38;
+    const historicalAppearanceRate = Math.min(1, inferredAppearances / eventDenominator);
+    const roleAppearanceProbability = completedGameweeks > 0
+      ? historicalAppearanceRate
+      : historicalAppearanceRate * roleEvidence + officialRoleSignal * (1 - roleEvidence);
+    const historicalConditionalMinutes = inferredAppearances > 0
+      ? Math.min(90, player.minutes / inferredAppearances)
+      : 0;
+    const officialConditionalMinutes = 30 + officialRoleSignal * 50;
+    const seasonExpectedMinutes = completedGameweeks > 0
+      ? historicalConditionalMinutes
+      : historicalConditionalMinutes * roleEvidence + officialConditionalMinutes * (1 - roleEvidence);
     const rollingProfile = this.rollingProfiles.get(player.id);
-    const rollingWeight = (rollingProfile?.reliability ?? 0) * 0.65;
-    const healthyExpectedMinutes = Math.max(0, Math.min(90,
-      seasonExpectedMinutes * (1 - rollingWeight) + (rollingProfile?.minutesPerEvent ?? seasonExpectedMinutes) * rollingWeight
-    ));
+    const healthyExpectedMinutes = Math.max(0, Math.min(90, seasonExpectedMinutes));
     const newsSignal = this.newsSignals.get(player.id);
     const newsMultiplier = newsSignal?.minutesMultiplier ?? 1;
     const expectedMinutes = healthyExpectedMinutes * newsMultiplier;
     const minutesFactor = expectedMinutes / 90;
-    const rateReliability = Math.min(1, player.minutes / 900);
+    // Before GW1, bootstrap carries prior-season totals. They are useful priors,
+    // but must not be treated as fully observed current-season evidence.
+    const rateReliability = completedGameweeks === 0
+      ? Math.min(0.35, (player.minutes / 1800) * 0.35)
+      : Math.min(1, player.minutes / 900, completedGameweeks / 6);
     
     // Set piece factor (bonus for set piece takers)
     let setpieceFactor = 1.0;
@@ -164,10 +181,12 @@ class OptimizationEngine {
     }
     
     const nextFixtures = this.getUpcomingFixtures(player.team, 1);
-    const healthyAppearanceProbability = player.status === 'a'
+    const availabilityProbability = player.status === 'a'
       ? ((player.chance_of_playing_next_round ?? 100) / 100)
       : ((player.chance_of_playing_next_round ?? 0) / 100);
-    const appearanceProbability = newsMultiplier === 0 ? 0 : healthyAppearanceProbability;
+    const appearanceProbability = newsMultiplier === 0
+      ? 0
+      : Math.max(0, Math.min(1, roleAppearanceProbability * availabilityProbability));
     const goalRatePrior = [0, 0.01, 0.05, 0.22, 0.35][player.element_type] ?? 0.15;
     const assistRatePrior = [0, 0.01, 0.08, 0.18, 0.12][player.element_type] ?? 0.1;
     const seasonGoalsPer90 = (player.expected_goals_per_90 || 0) * rateReliability + goalRatePrior * (1 - rateReliability);
@@ -184,7 +203,19 @@ class OptimizationEngine {
     const yellowCardProbability = Math.min(0.35, ((player.yellow_cards || 0) / playedNineties) * rateReliability + 0.1 * (1 - rateReliability));
     const redCardProbability = Math.min(0.08, ((player.red_cards || 0) / playedNineties) * rateReliability + 0.01 * (1 - rateReliability));
     const ownGoalProbability = Math.min(0.05, ((player.own_goals || 0) / playedNineties) * rateReliability + 0.003 * (1 - rateReliability));
-    const expectedBonus = Math.min(1.5, ((player.bonus || 0) / playedNineties) * rateReliability + 0.25 * (1 - rateReliability));
+    const bonusReliability = completedGameweeks === 0 ? 0 : rateReliability;
+    const expectedBonus = Math.min(1.5, ((player.bonus || 0) / playedNineties) * bonusReliability + 0.25 * (1 - bonusReliability));
+    const defensiveActionPrior = [0, 0, 8, 6, 4][player.element_type] ?? 5;
+    const rawDefensiveActionsPer90 = Number(player.defensive_contribution_per_90) || 0;
+    const defensiveActionsPer90 = rawDefensiveActionsPer90 * rateReliability
+      + defensiveActionPrior * (1 - rateReliability);
+    const defensiveContributionThreshold = player.element_type === 2 ? 10 : 12;
+    const defensiveContributionProbability = player.element_type === 1
+      ? 0
+      : poissonAtLeast(
+        defensiveActionsPer90 * (expectedMinutes / 90),
+        defensiveContributionThreshold
+      );
     const averageAttackHome = this.averageTeamStrength('strength_attack_home');
     const averageAttackAway = this.averageTeamStrength('strength_attack_away');
     const averageDefenceHome = this.averageTeamStrength('strength_defence_home');
@@ -234,7 +265,7 @@ class OptimizationEngine {
       redCardProbability,
       ownGoalProbability,
       expectedGoalsConceded: player.expected_goals_conceded_per_90 || player.goals_conceded_per_90 || 1,
-      defensiveContributionProbability: player.element_type === 1 ? 0 : Math.min(0.8, 0.2 + minutesFactor * 0.3),
+      defensiveContributionProbability,
       expectedBonus,
       rateReliability,
       fixtures: fixtureInputs(fixturesForProjection),
@@ -245,13 +276,20 @@ class OptimizationEngine {
     const nextCalibrationAdjustment = nextFixtures.length > 0 ? calibrationAdjustment : 0;
     const projectedGameweeks = new Set(upcomingFixtures.map(fixture => fixture.event)).size;
     
+    const officialWeight = completedGameweeks === 0 && Number.isFinite(officialExpectedPoints) ? 0.65 : 0;
+    const anchoredNextPoints = nextProjection.expectedPoints * (1 - officialWeight)
+      + Math.max(0, officialExpectedPoints) * officialWeight;
+    const horizonRoleScale = officialWeight > 0 && nextProjection.expectedPoints > 0
+      ? Math.max(0.5, Math.min(1.5, anchoredNextPoints / nextProjection.expectedPoints))
+      : 1;
+
     return {
       playerId: player.id,
       playerName: player.web_name,
       team: team?.short_name || 'UNK',
       position: positionName,
-      nextGW: Math.max(0, Math.round((nextProjection.expectedPoints + nextCalibrationAdjustment) * 10) / 10),
-      next5GW: Math.max(0, Math.round((projection.expectedPoints + calibrationAdjustment * projectedGameweeks) * 10) / 10),
+      nextGW: Math.max(0, Math.round((anchoredNextPoints + nextCalibrationAdjustment) * 10) / 10),
+      next5GW: Math.max(0, Math.round((projection.expectedPoints * horizonRoleScale + calibrationAdjustment * projectedGameweeks) * 10) / 10),
       confidence: projection.confidence,
       breakdown: {
         formFactor: Math.round(formFactor * 100) / 100,
@@ -343,8 +381,11 @@ class OptimizationEngine {
     benchPlayerIds: number[]
   ): ChipRecommendation {
     const gwFixtures = this.fixtures.filter(f => f.event === gameweek);
-    const isDGW = this.isDGW(gameweek);
     const isBGW = this.isBGW(gameweek);
+    const fixtureCount = (playerId: number) => {
+      const player = this.players.get(playerId);
+      return player ? gwFixtures.filter(fixture => fixture.team_h === player.team || fixture.team_a === player.team).length : 0;
+    };
 
     let recommended = false;
     let expectedGain = 0;
@@ -372,11 +413,13 @@ class OptimizationEngine {
         }, 0);
         
         expectedGain = benchXP;
-        recommended = isDGW && benchXP > 12;
-        confidence = isDGW ? 0.8 : 0.4;
-        reasoning = isDGW 
+        const benchAllPlay = benchPlayerIds.every(playerId => fixtureCount(playerId) > 0);
+        const benchHasDouble = benchPlayerIds.some(playerId => fixtureCount(playerId) >= 2);
+        recommended = benchAllPlay && benchHasDouble && benchXP > 12;
+        confidence = benchAllPlay && benchHasDouble ? 0.8 : 0.4;
+        reasoning = benchHasDouble
           ? `DGW${gameweek}: Bench expected ${benchXP.toFixed(1)} pts. ${recommended ? 'Recommended!' : 'Bench too weak.'}`
-          : `Not a DGW. Save Bench Boost for double gameweek.`;
+          : `No bench player has a double gameweek. Save Bench Boost.`;
         break;
       }
       
@@ -386,15 +429,20 @@ class OptimizationEngine {
           id,
           xp: this.calculateExpectedPoints(id, 1).nextGW,
         }));
-        const topPlayer = squadXP.sort((a, b) => b.xp - a.xp)[0];
+        const topPlayer = squadXP
+          .filter(candidate => fixtureCount(candidate.id) >= 2)
+          .sort((a, b) => b.xp - a.xp)[0];
+        if (!topPlayer) {
+          reasoning = 'No proposed starter has a double gameweek. Save Triple Captain.';
+          confidence = 0.9;
+          break;
+        }
         const topPlayerData = this.players.get(topPlayer.id);
         
         expectedGain = topPlayer.xp; // Extra captain points
-        recommended = isDGW && topPlayer.xp > 12;
-        confidence = isDGW ? 0.75 : 0.35;
-        reasoning = isDGW
-          ? `DGW${gameweek}: ${topPlayerData?.web_name} xP=${topPlayer.xp.toFixed(1)}. ${recommended ? 'Good TC target!' : 'No standout captaincy option.'}`
-          : `Not a DGW. TC is best used in double gameweeks.`;
+        recommended = topPlayer.xp > 12;
+        confidence = 0.75;
+        reasoning = `DGW${gameweek}: ${topPlayerData?.web_name} xP=${topPlayer.xp.toFixed(1)}. ${recommended ? 'Good TC target!' : 'No standout captaincy option.'}`;
         break;
       }
       
@@ -492,9 +540,9 @@ class OptimizationEngine {
   }
 
   private isBGW(gameweek: number): boolean {
-    // BGW if fewer than 10 fixtures (20 teams = 10 fixtures normally)
     const gwFixtures = this.fixtures.filter(f => f.event === gameweek);
-    return gwFixtures.length < 10;
+    const teamsWithFixtures = new Set(gwFixtures.flatMap(fixture => [fixture.team_h, fixture.team_a]));
+    return [...this.teams.keys()].some(teamId => !teamsWithFixtures.has(teamId));
   }
 
   // Get player by ID
@@ -630,7 +678,31 @@ class OptimizationEngine {
       throw new Error(`Player ${playerId} not found`);
     }
 
+    const completedGameweeks = this.gameweeks.filter(gameweek => gameweek.finished).length;
     const netTransfers = player.transfers_in_event - player.transfers_out_event;
+    if (completedGameweeks === 0) {
+      return {
+        player: player.web_name,
+        currentPrice: `£${(player.now_cost / 10).toFixed(1)}m`,
+        prediction: 'stable',
+        confidence: 1,
+        reasoning: 'Prices are frozen until the GW1 deadline.',
+        netTransfers,
+        transferVelocity: 0,
+      };
+    }
+    const officialChange = Number(player.price_change_percent);
+    if (Number.isFinite(officialChange) && officialChange !== 0) {
+      return {
+        player: player.web_name,
+        currentPrice: `£${(player.now_cost / 10).toFixed(1)}m`,
+        prediction: officialChange > 0 ? 'rise' : 'fall',
+        confidence: 0.8,
+        reasoning: `Official price-change indicator is ${officialChange.toFixed(1)}%.`,
+        netTransfers,
+        transferVelocity: Math.round(netTransfers / 24),
+      };
+    }
     const ownership = parseFloat(player.selected_by_percent) || 0;
     
     // Transfer velocity thresholds (rough estimates based on FPL patterns)
@@ -847,17 +919,48 @@ class OptimizationEngine {
 
 // Singleton instance
 let engineInstance: OptimizationEngine | null = null;
+let engineInitialization: Promise<OptimizationEngine> | null = null;
+let engineGeneration = 0;
 
 export async function getOptimizationEngine(): Promise<OptimizationEngine> {
-  if (!engineInstance) {
-    engineInstance = new OptimizationEngine();
-    await engineInstance.initialize();
-  }
-  return engineInstance;
+  if (engineInstance) return engineInstance;
+  if (engineInitialization) return engineInitialization;
+  const generation = engineGeneration;
+  const candidate = new OptimizationEngine();
+  engineInitialization = candidate.initialize()
+    .then(() => {
+      if (generation === engineGeneration) engineInstance = candidate;
+      return candidate;
+    })
+    .finally(() => {
+      engineInitialization = null;
+    });
+  return engineInitialization;
+}
+
+export async function refreshOptimizationEngine(): Promise<OptimizationEngine> {
+  const generation = ++engineGeneration;
+  const candidate = new OptimizationEngine();
+  await candidate.initialize();
+  if (generation === engineGeneration) engineInstance = candidate;
+  return candidate;
 }
 
 export function resetOptimizationEngine(): void {
+  engineGeneration += 1;
   engineInstance = null;
+  engineInitialization = null;
+}
+
+function poissonAtLeast(lambda: number, threshold: number): number {
+  if (!Number.isFinite(lambda) || lambda <= 0) return 0;
+  let probabilityBelow = Math.exp(-lambda);
+  let term = probabilityBelow;
+  for (let value = 1; value < threshold; value++) {
+    term *= lambda / value;
+    probabilityBelow += term;
+  }
+  return Math.max(0, Math.min(1, 1 - probabilityBelow));
 }
 
 export { OptimizationEngine };

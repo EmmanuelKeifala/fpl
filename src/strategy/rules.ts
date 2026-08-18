@@ -23,7 +23,6 @@ export const FPL_RULES = {
   maxFreeTransfers: 5,
   maxTransfersPerGameweek: 20,
   hitCost: 4,
-  afconTopUpGameweek: 16,
   firstHalfFinalGameweek: 19,
   squadComposition: {
     goalkeeper: 2,
@@ -99,10 +98,6 @@ export function getFreeTransfersAfterGameweek(input: {
   transfersMade: number;
   nextGameweek: number;
 }): number {
-  if (input.nextGameweek === FPL_RULES.afconTopUpGameweek) {
-    return FPL_RULES.maxFreeTransfers;
-  }
-
   const remaining = Math.max(0, input.previousFreeTransfers - input.transfersMade);
   return Math.max(1, Math.min(FPL_RULES.maxFreeTransfers, remaining + 1));
 }

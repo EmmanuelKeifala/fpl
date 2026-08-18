@@ -23,6 +23,7 @@ interface TransferChoice {
   transfers: TransferMove[];
   projectedGain: number;
   hitCost?: number;
+  outgoingExpectedPoints: number;
 }
 
 const MAX_CANDIDATES_PER_POSITION = 12;
@@ -95,11 +96,17 @@ function singleTransferChoices(squad: SquadPick[], bank: number, players: Backte
       if (!finalPlayers || !isLegalSquad(finalPlayers, calculateBankAfterTransfers(squad, bank, transfers, playersById))) continue;
       const projectedGain = scorePlayableSquad(finalPlayers) - currentScore;
       if (projectedGain <= 0) continue;
-      choices.push({ transfers, projectedGain });
+      choices.push({ transfers, projectedGain, outgoingExpectedPoints: outgoingPlayer.expectedPoints });
     }
   }
 
-  return choices.sort(compareTransferChoices);
+  const bestByIncoming = new Map<number, TransferChoice>();
+  for (const choice of choices) {
+    const incoming = choice.transfers[0]!.in;
+    const current = bestByIncoming.get(incoming);
+    if (!current || compareTransferChoices(choice, current) < 0) bestByIncoming.set(incoming, choice);
+  }
+  return [...bestByIncoming.values()].sort(compareTransferChoices);
 }
 
 function hitTransferChoices(squad: SquadPick[], bank: number, freeTransfers: number, players: BacktestPlayer[], hitThreshold: number): TransferChoice[] {
@@ -134,7 +141,12 @@ function hitTransferChoices(squad: SquadPick[], bank: number, freeTransfers: num
           const hitCost = Math.max(0, transfers.length - freeTransfers) * FPL_RULES.hitCost;
           const grossProjectedGain = scorePlayableSquad(finalPlayers) - currentScore;
           if (hitCost > 0 && grossProjectedGain < hitThreshold) continue;
-          choices.push({ transfers, projectedGain: grossProjectedGain - hitCost, hitCost });
+          choices.push({
+            transfers,
+            projectedGain: grossProjectedGain - hitCost,
+            hitCost,
+            outgoingExpectedPoints: firstOutgoingPlayer.expectedPoints + secondOutgoingPlayer.expectedPoints,
+          });
         }
       }
     }
@@ -191,7 +203,9 @@ function isLegalSquad(players: BacktestPlayer[], bank: number): boolean {
 }
 
 function compareTransferChoices(a: TransferChoice, b: TransferChoice): number {
-  return b.projectedGain - a.projectedGain || (a.transfers[0]?.in ?? 0) - (b.transfers[0]?.in ?? 0);
+  return b.projectedGain - a.projectedGain
+    || a.outgoingExpectedPoints - b.outgoingExpectedPoints
+    || (a.transfers[0]?.in ?? 0) - (b.transfers[0]?.in ?? 0);
 }
 
 function scorePlayableSquad(players: BacktestPlayer[]): number {

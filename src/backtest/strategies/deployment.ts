@@ -29,8 +29,8 @@ export const DEPLOYMENT_REPLAY_POLICY: DeploymentReplayPolicy = {
 
 // Selected on the 2024-2025 validation season before diagnostic 2025-2026 replay.
 export const ML_DEPLOYMENT_REPLAY_POLICY: DeploymentReplayPolicy = {
-  planningHorizonGameweeks: 1,
-  minXPGainForHit: 8,
+  planningHorizonGameweeks: 2,
+  minXPGainForHit: 24,
   maxCandidates: 40,
 };
 
@@ -64,7 +64,7 @@ export const ML_DEPLOYMENT_REPLAY_PROFILE: ReplayExecutionProfile = {
     ...DEPLOYMENT_REPLAY_PROFILE.limitations.filter(
       limitation => !limitation.startsWith('Six-gameweek planning')
     ),
-    'The one-gameweek planning policy was selected on the 2024-2025 validation season.',
+    'The two-gameweek planning policy was selected on the 2024-2025 validation season.',
     'Player forecasts come from a prior-season identity-independent ML model.',
   ],
 };

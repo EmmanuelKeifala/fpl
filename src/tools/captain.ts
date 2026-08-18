@@ -3,15 +3,14 @@ import { z } from 'zod';
 import { tool } from '@openai/agents';
 import { getFPLClient } from '../api/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
-import { logDecision } from '../db/client.js';
 
 export const setCaptainTool = tool({
   name: 'set_captain',
-  description: 'Set the captain and optionally vice-captain for your team. Shows xP analysis and alternative suggestions before confirming.',
+  description: 'Analyze a captain and optional vice-captain choice. This tool never submits changes to FPL.',
   parameters: z.object({
     captain: z.string().describe('Name of player to set as captain'),
     viceCaptain: z.string().default('').describe('Name of player to set as vice-captain (leave empty to keep current)'),
-    confirm: z.boolean().default(false).describe('Set to true to confirm the change'),
+    confirm: z.boolean().default(false).describe('Set true to return a manual-action summary after the analysis'),
   }),
   execute: async ({ captain, viceCaptain, confirm }) => {
     const client = getFPLClient();
@@ -19,7 +18,7 @@ export const setCaptainTool = tool({
     
     if (!client.isAuthenticated()) {
       return {
-        error: 'Authentication required to set captain.',
+        error: 'Authentication required to analyze your squad captaincy.',
         hint: 'Please provide FPL credentials in .env file.',
       };
     }
@@ -131,49 +130,15 @@ export const setCaptainTool = tool({
     if (!confirm) {
       return {
         status: 'ANALYSIS_ONLY',
-        message: 'Review captain analysis. Call again with confirm=true to set.',
+        message: 'Review captain analysis. Call again with confirm=true for a manual-action summary.',
         ...analysis,
       };
     }
     
-    // Confirmed captain changes are logged for tracking; automatic FPL mutation is disabled until verified.
-    const managerId = client.getManagerId();
-    if (!managerId) {
-      return {
-        error: 'Manager ID not found.',
-      };
-    }
-    
-    try {
-      const currentGW = engine.getCurrentGameweek();
-      
-      // Log the decision
-      await logDecision({
-        gameweek: currentGW,
-        decisionType: 'captain',
-        action: JSON.stringify({
-          captain: captainPlayer.web_name,
-          viceCaptain: viceCaptainPlayer?.web_name || currentVC,
-          previousCaptain: currentCaptain,
-        }),
-        reasoning: `Selected ${captainPlayer.web_name} as captain with ${captainXP.nextGW} xP`,
-        expectedPoints: captainXP.nextGW,
-        rankBefore: null,
-        hitsTaken: 0,
-      });
-      
-      return {
-        status: 'MANUAL_REQUIRED',
-        message: `Captain change was logged but not submitted to FPL. Set ${captainPlayer.web_name}${viceCaptainPlayer ? ` and vice-captain ${viceCaptainPlayer.web_name}` : ''} manually on the FPL website.`,
-        ...analysis,
-        note: 'Automatic captain updates require a verified FPL team-update payload and are disabled for safety.',
-      };
-    } catch (error) {
-      return {
-        status: 'FAILED',
-        message: error instanceof Error ? error.message : 'Failed to set captain',
-        ...analysis,
-      };
-    }
+    return {
+      status: 'MANUAL_REQUIRED',
+      message: `Set ${captainPlayer.web_name}${viceCaptainPlayer ? ` and vice-captain ${viceCaptainPlayer.web_name}` : ''} manually on the FPL website. No FPL or database state was changed.`,
+      ...analysis,
+    };
   },
 });

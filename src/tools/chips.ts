@@ -6,10 +6,10 @@ import { getOptimizationEngine } from '../engine/optimizer.js';
 
 export const playChipTool = tool({
   name: 'play_chip',
-  description: 'Evaluate and play a chip (Wildcard, Free Hit, Bench Boost, Triple Captain). Shows optimal timing analysis and requires confirmation. Chips can be used twice per season (once per half).',
+  description: 'Evaluate chip timing for Wildcard, Free Hit, Bench Boost, or Triple Captain. This tool never activates a chip.',
   parameters: z.object({
     chip: z.enum(['wildcard', 'freehit', 'bboost', '3xc']).describe('Chip to evaluate/play'),
-    confirm: z.boolean().default(false).describe('Set to true to play the chip. First call without confirm to see analysis.'),
+    confirm: z.boolean().default(false).describe('Set true to return a manual-action summary after the analysis.'),
   }),
   execute: async ({ chip, confirm }) => {
     const client = getFPLClient();
@@ -71,7 +71,7 @@ export const playChipTool = tool({
       }
     } else {
       return {
-        error: 'Authentication required to check and play chips.',
+        error: 'Authentication required to analyze chips for your squad.',
         hint: 'Please provide your FPL credentials.',
       };
     }
@@ -139,7 +139,7 @@ export const playChipTool = tool({
     if (!confirm) {
       return {
         status: 'ANALYSIS_ONLY',
-        message: `Review the ${chipNames[chip]} analysis. Call again with confirm=true to activate.`,
+        message: `Review the ${chipNames[chip]} analysis. Call again with confirm=true for a manual-action summary.`,
         ...analysis,
         warning: !evaluation.recommended
           ? `Not recommended this gameweek. ${evaluation.reasoning}`
@@ -149,7 +149,7 @@ export const playChipTool = tool({
     
     return {
       status: 'MANUAL_REQUIRED',
-      message: `${chipNames[chip]} was not activated automatically. Activate it manually on the FPL website after reviewing this analysis.`,
+      message: `${chipNames[chip]} was not activated. Activate it manually on the FPL website after reviewing this analysis.`,
       ...analysis,
     };
   },

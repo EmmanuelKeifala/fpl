@@ -3,13 +3,27 @@
 from __future__ import annotations
 
 import math
+import tempfile
 import unittest
 from datetime import datetime, timezone
+from pathlib import Path
 
 from scripts.ml import pipeline
 
 
 class FeatureContractTest(unittest.TestCase):
+    def test_reconstructed_season_directory_is_discovered(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            reconstructed = root / "2022-2023" / "reconstructed"
+            reconstructed.mkdir(parents=True)
+            (reconstructed / "teams.csv").write_text("id,name\n", encoding="utf-8")
+
+            self.assertEqual(
+                pipeline._resolve_season_dir(root, "2022-2023"),
+                reconstructed,
+            )
+
     def test_identity_fields_are_not_fitted(self) -> None:
         self.assertFalse(
             set(pipeline.IDENTITY_FIELDS_EXCLUDED).intersection(pipeline.FEATURE_NAMES)

@@ -2,60 +2,60 @@
   "blend_selection": {
     "candidates": [
       {
-        "active_player_gameweek_mae": 1.7913928097358343,
-        "active_player_gameweek_mean_spearman": 0.3800791152542231,
-        "active_player_gameweek_rmse": 2.8991487267418674,
+        "active_player_gameweek_mae": 1.7902749680951464,
+        "active_player_gameweek_mean_spearman": 0.3787303257934749,
+        "active_player_gameweek_rmse": 2.903232441780742,
         "conditional_weight": 1.0,
         "direct_weight": 0.0,
-        "fixture_mae": 0.9615989364071235,
-        "fixture_rmse": 1.9405642330230328
+        "fixture_mae": 0.9616812920943102,
+        "fixture_rmse": 1.941933988422904
       },
       {
-        "active_player_gameweek_mae": 1.7818306682164946,
-        "active_player_gameweek_mean_spearman": 0.38184327391149486,
-        "active_player_gameweek_rmse": 2.9313494573518075,
+        "active_player_gameweek_mae": 1.7824688991052349,
+        "active_player_gameweek_mean_spearman": 0.3800490236965812,
+        "active_player_gameweek_rmse": 2.9315246201858947,
         "conditional_weight": 0.75,
         "direct_weight": 0.25,
-        "fixture_mae": 0.9452459443174527,
-        "fixture_rmse": 1.9522247466027105
+        "fixture_mae": 0.9473840279406691,
+        "fixture_rmse": 1.9521299636540308
       },
       {
-        "active_player_gameweek_mae": 1.77832263693442,
-        "active_player_gameweek_mean_spearman": 0.382000834961555,
-        "active_player_gameweek_rmse": 2.968201048450592,
+        "active_player_gameweek_mae": 1.7794515678423448,
+        "active_player_gameweek_mean_spearman": 0.3791757781166545,
+        "active_player_gameweek_rmse": 2.963214949762977,
         "conditional_weight": 0.5,
         "direct_weight": 0.5,
-        "fixture_mae": 0.9314159135614456,
-        "fixture_rmse": 1.9674496160207733
+        "fixture_mae": 0.9350900276103282,
+        "fixture_rmse": 1.9649741449581457
       },
       {
-        "active_player_gameweek_mae": 1.7821548872826212,
-        "active_player_gameweek_mean_spearman": 0.3801711345552037,
-        "active_player_gameweek_rmse": 3.0095326561591516,
+        "active_player_gameweek_mae": 1.7819366871096318,
+        "active_player_gameweek_mean_spearman": 0.3773275663815651,
+        "active_player_gameweek_rmse": 2.998195679110424,
         "conditional_weight": 0.25,
         "direct_weight": 0.75,
-        "fixture_mae": 0.9206324439522712,
-        "fixture_rmse": 1.9861568753462262
+        "fixture_mae": 0.9251113135823794,
+        "fixture_rmse": 1.9804150073826474
       },
       {
-        "active_player_gameweek_mae": 1.7941808132939003,
-        "active_player_gameweek_mean_spearman": 0.3753830777658569,
-        "active_player_gameweek_rmse": 3.0551624628671115,
+        "active_player_gameweek_mae": 1.7908922300328118,
+        "active_player_gameweek_mean_spearman": 0.3735907466013456,
+        "active_player_gameweek_rmse": 3.0363530878290312,
         "conditional_weight": 0.0,
         "direct_weight": 1.0,
-        "fixture_mae": 0.9132556477717271,
-        "fixture_rmse": 2.0082492093767663
+        "fixture_mae": 0.9178733451376834,
+        "fixture_rmse": 1.998392360957461
       }
     ],
     "criterion": "validation active player-gameweek RMSE, then MAE and mean gameweek Spearman; activity is a validation target only",
     "selected": {
-      "active_player_gameweek_mae": 1.7913928097358343,
-      "active_player_gameweek_mean_spearman": 0.3800791152542231,
-      "active_player_gameweek_rmse": 2.8991487267418674,
+      "active_player_gameweek_mae": 1.7902749680951464,
+      "active_player_gameweek_mean_spearman": 0.3787303257934749,
+      "active_player_gameweek_rmse": 2.903232441780742,
       "conditional_weight": 1.0,
       "direct_weight": 0.0,
-      "fixture_mae": 0.9615989364071235,
-      "fixture_rmse": 1.9405642330230328
+      "fixture_mae": 0.9616812920943102,
+      "fixture_rmse": 1.941933988422904
     }
   },
   "definitions": {
@@ -68,118 +68,121 @@
     "promotion_test": false,
     "test_season": "2025-2026",
     "test_used_for_selection": false,
-    "train_season": "2023-2024",
+    "train_seasons": [
+      "2022-2023",
+      "2023-2024"
+    ],
     "validation_season": "2024-2025"
   },
   "test": {
     "appearance": {
       "actual_rate": 0.38632467139543486,
-      "brier_score": 0.08968467450462925,
-      "mean_probability": 0.3862459187231502,
-      "probability_bias": -7.875267228468609e-05,
+      "brier_score": 0.0895788428172913,
+      "mean_probability": 0.38835502437947056,
+      "probability_bias": 0.002030352984035715,
       "rows": 29747
     },
     "minutes": {
       "active_fixture_level": {
-        "bias": -11.21243368900137,
-        "mae": 22.175689620744553,
-        "mean_gameweek_spearman": 0.6040342081134971,
-        "rmse": 28.568782173173503,
+        "bias": -11.504753865808905,
+        "mae": 22.298808727154004,
+        "mean_gameweek_spearman": 0.6033940274498815,
+        "rmse": 28.568706181037598,
         "rows": 11492,
-        "spearman": 0.5992810730124136
+        "spearman": 0.6015158357603748
       },
       "active_player_gameweek_level": {
-        "bias": -11.228217941629756,
-        "mae": 22.385882949214984,
-        "mean_gameweek_spearman": 0.6081397237411236,
-        "rmse": 28.877270885158545,
+        "bias": -11.524798161509185,
+        "mae": 22.506463144919945,
+        "mean_gameweek_spearman": 0.6074491409239208,
+        "rmse": 28.87227609246643,
         "rows": 11361,
-        "spearman": 0.6040192725094976
+        "spearman": 0.606306269806035
       },
       "fixture_level": {
-        "bias": 0.5546755453835673,
-        "mae": 13.453331311531418,
-        "mean_gameweek_spearman": 0.7615824450760129,
-        "rmse": 22.405010860981676,
+        "bias": 0.5077440918934539,
+        "mae": 13.566894302614863,
+        "mean_gameweek_spearman": 0.7617550264787053,
+        "rmse": 22.400911721792284,
         "rows": 29747,
-        "spearman": 0.765036053430474
+        "spearman": 0.7651580419740062
       },
       "player_gameweek_level": {
-        "bias": 0.5624082571588035,
-        "mae": 13.579307848844914,
-        "mean_gameweek_spearman": 0.762227306114362,
-        "rmse": 22.631454548327277,
+        "bias": 0.5148225339680473,
+        "mae": 13.69326549880346,
+        "mean_gameweek_spearman": 0.7624093469944113,
+        "rmse": 22.625082712733576,
         "rows": 29338,
-        "spearman": 0.7656074687282973
+        "spearman": 0.7657361148945153
       }
     },
     "points": {
       "appearance_times_conditional": {
         "active_fixture_level": {
-          "bias": -1.021644018480944,
-          "mae": 1.943110369850705,
-          "mean_gameweek_spearman": 0.3224520119297027,
-          "rmse": 3.0554182043941878,
+          "bias": -1.029310372723878,
+          "mae": 1.9319051222340455,
+          "mean_gameweek_spearman": 0.3348127706803807,
+          "rmse": 3.0495510429234267,
           "rows": 11492,
-          "spearman": 0.316325286066761
+          "spearman": 0.32900436664040333
         },
         "active_player_gameweek_level": {
-          "bias": -1.0283787018547306,
-          "mae": 1.9596502620140313,
-          "mean_gameweek_spearman": 0.3287055383427273,
-          "rmse": 3.078369276766587,
+          "bias": -1.0363900299068047,
+          "mae": 1.9481593063279934,
+          "mean_gameweek_spearman": 0.3408315480595734,
+          "rmse": 3.0717837487709603,
           "rows": 11361,
-          "spearman": 0.32436514371174596
+          "spearman": 0.33663101685717817
         },
         "fixture_level": {
-          "bias": -0.19577719490070508,
-          "mae": 0.9495805699396926,
-          "mean_gameweek_spearman": 0.7115443046458596,
-          "rmse": 1.9673200888006404,
+          "bias": -0.19942649657634517,
+          "mae": 0.9445641064443444,
+          "mean_gameweek_spearman": 0.7127343381196355,
+          "rmse": 1.9620777148731325,
           "rows": 29747,
-          "spearman": 0.7155191540093973
+          "spearman": 0.7167985669499105
         },
         "player_gameweek_level": {
-          "bias": -0.19850651771461156,
-          "mae": 0.9585933888404705,
-          "mean_gameweek_spearman": 0.7127509744870594,
-          "rmse": 1.9840508700487882,
+          "bias": -0.20220669417330903,
+          "mae": 0.9535457432444951,
+          "mean_gameweek_spearman": 0.7138960591375166,
+          "rmse": 1.9784534696335268,
           "rows": 29338,
-          "spearman": 0.7167577874851657
+          "spearman": 0.7179792263030913
         }
       },
       "baseline_position_price": {
         "active_fixture_level": {
-          "bias": -1.3919142766525823,
-          "mae": 2.055729155947867,
-          "mean_gameweek_spearman": 0.1330118775453129,
-          "rmse": 3.2802096704919887,
+          "bias": -1.3541857865589095,
+          "mae": 2.0493276117956434,
+          "mean_gameweek_spearman": 0.13770012174996635,
+          "rmse": 3.2619919042081826,
           "rows": 11492,
-          "spearman": 0.13315104524151253
+          "spearman": 0.13748390992792647
         },
         "active_player_gameweek_level": {
-          "bias": -1.4024990587526411,
-          "mae": 2.0774125172376054,
-          "mean_gameweek_spearman": 0.13965485415467396,
-          "rmse": 3.310320917357891,
+          "bias": -1.3643595021615138,
+          "mae": 2.070246385515436,
+          "mean_gameweek_spearman": 0.1444574094825969,
+          "rmse": 3.2914153356048095,
           "rows": 11361,
-          "spearman": 0.142268326973453
+          "spearman": 0.14650527164168617
         },
         "fixture_level": {
-          "bias": -0.009160222989646954,
-          "mae": 1.3227494931983506,
-          "mean_gameweek_spearman": 0.42800556327975964,
-          "rmse": 2.223471876137281,
+          "bias": 0.01931262765663849,
+          "mae": 1.3341738228659208,
+          "mean_gameweek_spearman": 0.4320213302145523,
+          "rmse": 2.2211591073306263,
           "rows": 29747,
-          "spearman": 0.42968513006591663
+          "spearman": 0.43380451617236304
         },
         "player_gameweek_level": {
-          "bias": -0.009287925328005587,
-          "mae": 1.3382911671399604,
-          "mean_gameweek_spearman": 0.42956843102137515,
-          "rmse": 2.248768971799044,
+          "bias": 0.01958186430233913,
+          "mae": 1.3496165459404135,
+          "mean_gameweek_spearman": 0.43341226389870546,
+          "rmse": 2.246240472436654,
           "rows": 29338,
-          "spearman": 0.43166622706235497
+          "spearman": 0.4355601995790706
         }
       },
       "baseline_rolling_shrunk_points": {
@@ -218,70 +221,70 @@
       },
       "blended": {
         "active_fixture_level": {
-          "bias": -1.021644018480944,
-          "mae": 1.943110369850705,
-          "mean_gameweek_spearman": 0.3224520119297027,
-          "rmse": 3.0554182043941878,
+          "bias": -1.029310372723878,
+          "mae": 1.9319051222340455,
+          "mean_gameweek_spearman": 0.3348127706803807,
+          "rmse": 3.0495510429234267,
           "rows": 11492,
-          "spearman": 0.316325286066761
+          "spearman": 0.32900436664040333
         },
         "active_player_gameweek_level": {
-          "bias": -1.0283787018547306,
-          "mae": 1.9596502620140313,
-          "mean_gameweek_spearman": 0.3287055383427273,
-          "rmse": 3.078369276766587,
+          "bias": -1.0363900299068047,
+          "mae": 1.9481593063279934,
+          "mean_gameweek_spearman": 0.3408315480595734,
+          "rmse": 3.0717837487709603,
           "rows": 11361,
-          "spearman": 0.32436514371174596
+          "spearman": 0.33663101685717817
         },
         "fixture_level": {
-          "bias": -0.19577719490070508,
-          "mae": 0.9495805699396926,
-          "mean_gameweek_spearman": 0.7115443046458596,
-          "rmse": 1.9673200888006404,
+          "bias": -0.19942649657634517,
+          "mae": 0.9445641064443444,
+          "mean_gameweek_spearman": 0.7127343381196355,
+          "rmse": 1.9620777148731325,
           "rows": 29747,
-          "spearman": 0.7155191540093973
+          "spearman": 0.7167985669499105
         },
         "player_gameweek_level": {
-          "bias": -0.19850651771461156,
-          "mae": 0.9585933888404705,
-          "mean_gameweek_spearman": 0.7127509744870594,
-          "rmse": 1.9840508700487882,
+          "bias": -0.20220669417330903,
+          "mae": 0.9535457432444951,
+          "mean_gameweek_spearman": 0.7138960591375166,
+          "rmse": 1.9784534696335268,
           "rows": 29338,
-          "spearman": 0.7167577874851657
+          "spearman": 0.7179792263030913
         }
       },
       "direct": {
         "active_fixture_level": {
-          "bias": -1.42686326592627,
-          "mae": 1.971135947412582,
-          "mean_gameweek_spearman": 0.31690762952945767,
-          "rmse": 3.2201298608961375,
+          "bias": -1.38401206579547,
+          "mae": 1.9596905439194725,
+          "mean_gameweek_spearman": 0.32157563008125695,
+          "rmse": 3.198688103926925,
           "rows": 11492,
-          "spearman": 0.3101247404152027
+          "spearman": 0.31576410463119037
         },
         "active_player_gameweek_level": {
-          "bias": -1.439615779704851,
-          "mae": 1.9891381556141927,
-          "mean_gameweek_spearman": 0.3241566264229613,
-          "rmse": 3.2468994852005246,
+          "bias": -1.3962500932434754,
+          "mae": 1.9772119358212898,
+          "mean_gameweek_spearman": 0.3280868578983899,
+          "rmse": 3.2243721355688355,
           "rows": 11361,
-          "spearman": 0.3191795101639496
+          "spearman": 0.32387995776455797
         },
         "fixture_level": {
-          "bias": -0.3989743183402856,
-          "mae": 0.9137566111547925,
-          "mean_gameweek_spearman": 0.7103765006351449,
-          "rmse": 2.039822969326965,
+          "bias": -0.37577937632051045,
+          "mae": 0.9159754356216725,
+          "mean_gameweek_spearman": 0.7103800779290409,
+          "rmse": 2.0286076711449157,
           "rows": 29747,
-          "spearman": 0.7151140642390813
+          "spearman": 0.7147536308093638
         },
         "player_gameweek_level": {
-          "bias": -0.4045364049242783,
-          "mae": 0.9232321361882603,
-          "mean_gameweek_spearman": 0.7114910890540455,
-          "rmse": 2.0590022188500994,
+          "bias": -0.3810181030542718,
+          "mae": 0.9253389121548358,
+          "mean_gameweek_spearman": 0.7114811770570718,
+          "rmse": 2.0471020575452603,
           "rows": 29338,
-          "spearman": 0.7162860747841264
+          "spearman": 0.7159067852643619
         }
       }
     },
@@ -289,121 +292,121 @@
     "season": "2025-2026",
     "start": {
       "actual_rate": 0.28103674320099503,
-      "brier_score": 0.08246252075762812,
-      "mean_probability": 0.28297016494582866,
-      "probability_bias": 0.001933421744833615,
+      "brier_score": 0.0854364635977966,
+      "mean_probability": 0.27216659860397335,
+      "probability_bias": -0.008870144597021708,
       "rows": 29747
     }
   },
   "validation": {
     "appearance": {
       "actual_rate": 0.4239269875013745,
-      "brier_score": 0.10013269254905048,
-      "mean_probability": 0.4178039286188193,
-      "probability_bias": -0.00612305888255514,
+      "brier_score": 0.09997295848984142,
+      "mean_probability": 0.42038631769378515,
+      "probability_bias": -0.003540669807589361,
       "rows": 27283
     },
     "minutes": {
       "active_fixture_level": {
-        "bias": -11.48186390275975,
-        "mae": 22.221534560968944,
-        "mean_gameweek_spearman": 0.5991788247674165,
-        "rmse": 28.60544953844415,
+        "bias": -11.726198745106766,
+        "mae": 22.32609625171157,
+        "mean_gameweek_spearman": 0.5981397331930832,
+        "rmse": 28.601735947376888,
         "rows": 11566,
-        "spearman": 0.5957860954153847
+        "spearman": 0.5965796281536802
       },
       "active_player_gameweek_level": {
-        "bias": -11.519361993580786,
-        "mae": 22.446965753478118,
-        "mean_gameweek_spearman": 0.6038818451798423,
-        "rmse": 28.973022494312538,
+        "bias": -11.766445117368379,
+        "mae": 22.548461683100548,
+        "mean_gameweek_spearman": 0.6026798302889362,
+        "rmse": 28.966203663364936,
         "rows": 11431,
-        "spearman": 0.6007253740632634
+        "spearman": 0.6012730824822395
       },
       "fixture_level": {
-        "bias": 0.3930206669520934,
-        "mae": 14.680800846239052,
-        "mean_gameweek_spearman": 0.7570753182928505,
-        "rmse": 23.499721323395626,
+        "bias": 0.3737956720376596,
+        "mae": 14.809482507546983,
+        "mean_gameweek_spearman": 0.757512281772746,
+        "rmse": 23.51387601493467,
         "rows": 27283,
-        "spearman": 0.7633612006648004
+        "spearman": 0.7633238683633523
       },
       "player_gameweek_level": {
-        "bias": 0.3983351111279752,
-        "mae": 14.821942692265102,
-        "mean_gameweek_spearman": 0.7576233213006364,
-        "rmse": 23.793409140834456,
+        "bias": 0.37885015491673063,
+        "mae": 14.950479845327234,
+        "mean_gameweek_spearman": 0.7580618394477581,
+        "rmse": 23.80742066425828,
         "rows": 26919,
-        "spearman": 0.7639949391173708
+        "spearman": 0.7639499761423428
       }
     },
     "points": {
       "appearance_times_conditional": {
         "active_fixture_level": {
-          "bias": -0.7973487241029482,
-          "mae": 1.7812934657489332,
-          "mean_gameweek_spearman": 0.372541084642152,
-          "rmse": 2.8715156590268855,
+          "bias": -0.8037357279078441,
+          "mae": 1.7803679938401036,
+          "mean_gameweek_spearman": 0.3713468461603813,
+          "rmse": 2.875462343965207,
           "rows": 11566,
-          "spearman": 0.3608874416657962
+          "spearman": 0.36089654472062815
         },
         "active_player_gameweek_level": {
-          "bias": -0.8030170245879441,
-          "mae": 1.7913928097358343,
-          "mean_gameweek_spearman": 0.3800791152542231,
-          "rmse": 2.8991487267418674,
+          "bias": -0.8096541769649834,
+          "mae": 1.7902749680951464,
+          "mean_gameweek_spearman": 0.3787303257934749,
+          "rmse": 2.903232441780742,
           "rows": 11431,
-          "spearman": 0.3695575559587764
+          "spearman": 0.36907869533736687
         },
         "fixture_level": {
-          "bias": -0.13155707898073213,
-          "mae": 0.9615989364071235,
-          "mean_gameweek_spearman": 0.6998829785270501,
-          "rmse": 1.9405642330230328,
+          "bias": -0.13379001405738722,
+          "mae": 0.9616812920943102,
+          "mean_gameweek_spearman": 0.6996038459024853,
+          "rmse": 1.941933988422904,
           "rows": 27283,
-          "spearman": 0.7035515495884934
+          "spearman": 0.703725156201536
         },
         "player_gameweek_level": {
-          "bias": -0.13333600006803056,
-          "mae": 0.9683653564517182,
-          "mean_gameweek_spearman": 0.7006601190872379,
-          "rmse": 1.9611246675396918,
+          "bias": -0.13559912899913426,
+          "mae": 0.9684459713828393,
+          "mean_gameweek_spearman": 0.7003055807938764,
+          "rmse": 1.9626183471186416,
           "rows": 26919,
-          "spearman": 0.7044934044999964
+          "spearman": 0.7045182608516409
         }
       },
       "baseline_position_price": {
         "active_fixture_level": {
-          "bias": -1.23773319120778,
-          "mae": 1.859117897080269,
-          "mean_gameweek_spearman": 0.20691840025200275,
-          "rmse": 3.0918965757430312,
+          "bias": -1.1886560021807504,
+          "mae": 1.8505692606816482,
+          "mean_gameweek_spearman": 0.2204880845971301,
+          "rmse": 3.0656893151973454,
           "rows": 11566,
-          "spearman": 0.20321794335289484
+          "spearman": 0.2159311529991823
         },
         "active_player_gameweek_level": {
-          "bias": -1.2488863940698882,
-          "mae": 1.8743417281285963,
-          "mean_gameweek_spearman": 0.21710625529404837,
-          "rmse": 3.1283576393277652,
+          "bias": -1.19915407392388,
+          "mae": 1.8652014969705353,
+          "mean_gameweek_spearman": 0.2308559701545994,
+          "rmse": 3.1016964419129223,
           "rows": 11431,
-          "spearman": 0.2146284373544083
+          "spearman": 0.22758635345812703
         },
         "fixture_level": {
-          "bias": -0.03965970972023189,
-          "mae": 1.2731790428780736,
-          "mean_gameweek_spearman": 0.4011365112152286,
-          "rmse": 2.173335209337323,
+          "bias": -0.003859106965408479,
+          "mae": 1.2845505030579214,
+          "mean_gameweek_spearman": 0.4090523008494909,
+          "rmse": 2.1664889842407877,
           "rows": 27283,
-          "spearman": 0.4030653905450029
+          "spearman": 0.4105350178740226
         },
         "player_gameweek_level": {
-          "bias": -0.040195990203836934,
-          "mae": 1.2860650397323004,
-          "mean_gameweek_spearman": 0.4014978943849739,
-          "rmse": 2.202206884044719,
+          "bias": -0.0039112899935822044,
+          "mae": 1.29734984641171,
+          "mean_gameweek_spearman": 0.4092269374440307,
+          "rmse": 2.19526706037268,
           "rows": 26919,
-          "spearman": 0.4034945496566512
+          "spearman": 0.41076127855729216
         }
       },
       "baseline_rolling_shrunk_points": {
@@ -442,70 +445,70 @@
       },
       "blended": {
         "active_fixture_level": {
-          "bias": -0.7973487241029482,
-          "mae": 1.7812934657489332,
-          "mean_gameweek_spearman": 0.372541084642152,
-          "rmse": 2.8715156590268855,
+          "bias": -0.8037357279078441,
+          "mae": 1.7803679938401036,
+          "mean_gameweek_spearman": 0.3713468461603813,
+          "rmse": 2.875462343965207,
           "rows": 11566,
-          "spearman": 0.3608874416657962
+          "spearman": 0.36089654472062815
         },
         "active_player_gameweek_level": {
-          "bias": -0.8030170245879441,
-          "mae": 1.7913928097358343,
-          "mean_gameweek_spearman": 0.3800791152542231,
-          "rmse": 2.8991487267418674,
+          "bias": -0.8096541769649834,
+          "mae": 1.7902749680951464,
+          "mean_gameweek_spearman": 0.3787303257934749,
+          "rmse": 2.903232441780742,
           "rows": 11431,
-          "spearman": 0.3695575559587764
+          "spearman": 0.36907869533736687
         },
         "fixture_level": {
-          "bias": -0.13155707898073213,
-          "mae": 0.9615989364071235,
-          "mean_gameweek_spearman": 0.6998829785270501,
-          "rmse": 1.9405642330230328,
+          "bias": -0.13379001405738722,
+          "mae": 0.9616812920943102,
+          "mean_gameweek_spearman": 0.6996038459024853,
+          "rmse": 1.941933988422904,
           "rows": 27283,
-          "spearman": 0.7035515495884934
+          "spearman": 0.703725156201536
         },
         "player_gameweek_level": {
-          "bias": -0.13333600006803056,
-          "mae": 0.9683653564517182,
-          "mean_gameweek_spearman": 0.7006601190872379,
-          "rmse": 1.9611246675396918,
+          "bias": -0.13559912899913426,
+          "mae": 0.9684459713828393,
+          "mean_gameweek_spearman": 0.7003055807938764,
+          "rmse": 1.9626183471186416,
           "rows": 26919,
-          "spearman": 0.7044934044999964
+          "spearman": 0.7045182608516409
         }
       },
       "direct": {
         "active_fixture_level": {
-          "bias": -1.1874167274599534,
-          "mae": 1.7820558183828792,
-          "mean_gameweek_spearman": 0.36763412723255656,
-          "rmse": 3.0217694580964674,
+          "bias": -1.1400604671391819,
+          "mae": 1.7789164259051307,
+          "mean_gameweek_spearman": 0.3657900449873527,
+          "rmse": 3.0030903347740185,
           "rows": 11566,
-          "spearman": 0.35511535616616463
+          "spearman": 0.35344360394318525
         },
         "active_player_gameweek_level": {
-          "bias": -1.1985275236832948,
-          "mae": 1.7941808132939003,
-          "mean_gameweek_spearman": 0.3753830777658569,
-          "rmse": 3.0551624628671115,
+          "bias": -1.1507202439802868,
+          "mae": 1.7908922300328118,
+          "mean_gameweek_spearman": 0.3735907466013456,
+          "rmse": 3.0363530878290312,
           "rows": 11431,
-          "spearman": 0.3639659111444677
+          "spearman": 0.36251063098295555
         },
         "fixture_level": {
-          "bias": -0.3455839030554621,
-          "mae": 0.9132556477717271,
-          "mean_gameweek_spearman": 0.6974952256843239,
-          "rmse": 2.0082492093767663,
+          "bias": -0.3195597357167138,
+          "mae": 0.9178733451376834,
+          "mean_gameweek_spearman": 0.6968649170402087,
+          "rmse": 1.998392360957461,
           "rows": 27283,
-          "spearman": 0.7022096385116383
+          "spearman": 0.701370191133162
         },
         "player_gameweek_level": {
-          "bias": -0.3502569050507884,
-          "mae": 0.9205796416257718,
-          "mean_gameweek_spearman": 0.6982735354278381,
-          "rmse": 2.0321541135485157,
+          "bias": -0.3238808376819014,
+          "mae": 0.9252581418657686,
+          "mean_gameweek_spearman": 0.6976457698073607,
+          "rmse": 2.0223059675472097,
           "rows": 26919,
-          "spearman": 0.7031080353011743
+          "spearman": 0.7022713927677977
         }
       }
     },
@@ -513,9 +516,9 @@
     "season": "2024-2025",
     "start": {
       "actual_rate": 0.30641791591833745,
-      "brier_score": 0.09069994295547747,
-      "mean_probability": 0.3055900988375142,
-      "probability_bias": -0.0008278170808232073,
+      "brier_score": 0.09376968207988405,
+      "mean_probability": 0.29495434300372547,
+      "probability_bias": -0.011463572914611963,
       "rows": 27283
     }
   }

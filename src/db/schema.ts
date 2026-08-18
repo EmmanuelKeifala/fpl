@@ -16,6 +16,22 @@ export const decisions = sqliteTable('decisions', {
   createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
 });
 
+export const scopedDecisions = sqliteTable('decisions_scoped', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  season: text('season').notNull(),
+  managerId: integer('manager_id').notNull(),
+  gameweek: integer('gameweek').notNull(),
+  decisionType: text('decision_type').notNull(),
+  action: text('action').notNull(),
+  reasoning: text('reasoning'),
+  expectedPoints: real('expected_points'),
+  actualPoints: real('actual_points'),
+  rankBefore: integer('rank_before'),
+  rankAfter: integer('rank_after'),
+  hitsTaken: integer('hits_taken').default(0),
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+});
+
 // Gameweek snapshots for tracking performance over time
 export const gameweekSnapshots = sqliteTable('gameweek_snapshots', {
   id: integer('id').primaryKey({ autoIncrement: true }),
@@ -35,8 +51,30 @@ export const gameweekSnapshots = sqliteTable('gameweek_snapshots', {
   createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
 });
 
+export const scopedGameweekSnapshots = sqliteTable('gameweek_snapshots_scoped', {
+  id: integer('id').primaryKey({ autoIncrement: true }),
+  season: text('season').notNull(),
+  managerId: integer('manager_id').notNull(),
+  gameweek: integer('gameweek').notNull(),
+  totalPoints: integer('total_points'),
+  overallRank: integer('overall_rank'),
+  gameweekPoints: integer('gameweek_points'),
+  gameweekRank: integer('gameweek_rank'),
+  teamValue: real('team_value'),
+  bank: real('bank'),
+  chipsUsed: text('chips_used'),
+  transfersMade: integer('transfers_made'),
+  transfersCost: integer('transfers_cost'),
+  pointsOnBench: integer('points_on_bench'),
+  captainId: integer('captain_id'),
+  captainPoints: integer('captain_points'),
+  createdAt: integer('created_at', { mode: 'timestamp' }).$defaultFn(() => new Date()),
+});
+
 // Type exports for queries
 export type Decision = typeof decisions.$inferSelect;
 export type NewDecision = typeof decisions.$inferInsert;
+export type ScopedDecision = typeof scopedDecisions.$inferSelect;
+export type NewScopedDecision = typeof scopedDecisions.$inferInsert;
 export type GameweekSnapshot = typeof gameweekSnapshots.$inferSelect;
 export type NewGameweekSnapshot = typeof gameweekSnapshots.$inferInsert;

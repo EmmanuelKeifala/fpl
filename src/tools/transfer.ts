@@ -3,19 +3,26 @@ import { z } from 'zod';
 import { tool } from '@openai/agents';
 import { getFPLClient } from '../api/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
-import { logDecision } from '../db/client.js';
+import { getFreeTransfers } from '../scheduler/decisions.js';
 
 export const makeTransferTool = tool({
   name: 'make_transfer',
-  description: 'Evaluate and execute a transfer. Shows expected points gain, hit cost analysis, and requires confirmation before executing. Uses game theory to validate the transfer is worthwhile.',
+  description: 'Analyze a possible transfer with expected-points, budget, and hit-cost context. This tool never executes a live transfer.',
   parameters: z.object({
     playerOut: z.string().describe('Name of player to sell'),
     playerIn: z.string().describe('Name of player to buy'),
-    confirm: z.boolean().default(false).describe('Set to true to execute the transfer. First call without confirm to see analysis.'),
+    confirm: z.boolean().default(false).describe('Set true to return a manual-action summary after the analysis.'),
   }),
   execute: async ({ playerOut, playerIn, confirm }) => {
     const client = getFPLClient();
     const engine = await getOptimizationEngine();
+
+    if (!client.isAuthenticated()) {
+      return {
+        status: 'AUTH_REQUIRED',
+        message: 'Authenticated team data is required even for transfer analysis.',
+      };
+    }
     
     // Find players
     const outPlayer = engine.findPlayerByName(playerOut);
@@ -51,39 +58,23 @@ export const makeTransferTool = tool({
     }
     
     // Get current team info for budget check
-    let freeTransfers = 1; // Default assumption
-    let bank = 0;
-    let sellingPrice = outPlayer.now_cost; // Approximate
-    let currentSquadByTeam = new Map<number, number[]>();
-    
-    if (client.isAuthenticated()) {
-      try {
-        const myTeam = await client.getMyTeam();
-        freeTransfers = myTeam.transfers.limit - myTeam.transfers.made;
-        bank = myTeam.transfers.bank;
-        
-        // Find actual selling price from picks
-        const pick = myTeam.picks.find(p => p.element === outPlayer.id);
-        if (!pick) {
-          return {
-            error: `${outPlayer.web_name} is not in your current squad.`,
-          };
-        }
-        sellingPrice = pick.selling_price ?? outPlayer.now_cost;
-        
-        // Build squad by team for limit check
-        myTeam.picks.forEach(p => {
-          const player = engine.getPlayer(p.element);
-          if (player) {
-            const teamPlayers = currentSquadByTeam.get(player.team) || [];
-            teamPlayers.push(p.element);
-            currentSquadByTeam.set(player.team, teamPlayers);
-          }
-        });
-      } catch (error) {
-        // Continue with default values
-      }
+    let myTeam;
+    try {
+      myTeam = await client.getMyTeam();
+    } catch (error) {
+      return { error: `Failed to fetch the authoritative team: ${error instanceof Error ? error.message : String(error)}` };
     }
+    const freeTransfers = getFreeTransfers(myTeam);
+    const bank = myTeam.transfers.bank;
+    const pick = myTeam.picks.find(p => p.element === outPlayer.id);
+    if (!pick) return { error: `${outPlayer.web_name} is not in your current squad.` };
+    if (pick.selling_price === undefined) return { error: `Selling price is unavailable for ${outPlayer.web_name}.` };
+    const sellingPrice = pick.selling_price;
+    const currentSquadByTeam = new Map<number, number[]>();
+    myTeam.picks.forEach(p => {
+      const player = engine.getPlayer(p.element);
+      if (player) currentSquadByTeam.set(player.team, [...(currentSquadByTeam.get(player.team) ?? []), p.element]);
+    });
     
     // Calculate budget
     const buyingPrice = inPlayer.now_cost;
@@ -171,7 +162,7 @@ export const makeTransferTool = tool({
     if (!confirm) {
       return {
         status: 'ANALYSIS_ONLY',
-        message: 'Review the analysis below. Call again with confirm=true to execute.',
+        message: 'Review the analysis below. Call again with confirm=true for a manual-action summary.',
         ...analysis,
         warning: evaluation.hitCost > 0 && evaluation.netGain < 8
           ? 'This hit may not be worth it. Consider waiting for a free transfer.'
@@ -179,47 +170,10 @@ export const makeTransferTool = tool({
       };
     }
     
-    // Execute transfer
-    if (!client.isAuthenticated()) {
-      return {
-        status: 'AUTH_REQUIRED',
-        message: 'Authentication required to execute transfers. Please provide FPL credentials.',
-        ...analysis,
-      };
-    }
-    
-    const currentGW = engine.getCurrentGameweek();
-    const result = await client.makeTransfer(outPlayer.id, inPlayer.id, currentGW, buyingPrice, sellingPrice);
-    
-    if (result.success) {
-      // Log decision to database
-      await logDecision({
-        gameweek: currentGW,
-        decisionType: 'transfer',
-        action: JSON.stringify({
-          playerOut: outPlayer.web_name,
-          playerIn: inPlayer.web_name,
-          playerOutId: outPlayer.id,
-          playerInId: inPlayer.id,
-        }),
-        reasoning: evaluation.reasoning,
-        expectedPoints: evaluation.xpGain,
-        rankBefore: null,
-        hitsTaken: evaluation.hitCost > 0 ? 1 : 0,
-      });
-      
-      return {
-        status: 'SUCCESS',
-        message: `Transfer complete: ${outPlayer.web_name} OUT, ${inPlayer.web_name} IN`,
-        ...analysis,
-        logged: true,
-      };
-    } else {
-      return {
-        status: 'FAILED',
-        message: result.message,
-        ...analysis,
-      };
-    }
+    return {
+      status: 'MANUAL_REQUIRED',
+      message: 'LLM tools are analysis-only. Review this plan and make the transfer manually; autonomous execution is restricted to the deployment worker.',
+      ...analysis,
+    };
   },
 });

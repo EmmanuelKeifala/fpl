@@ -7,6 +7,7 @@ import {
 } from '../db/client.js';
 import type { ExpectedPoints } from '../engine/optimizer.js';
 import type { LiveSeasonConfig } from '../strategy/season.js';
+import { ensureAutomaticFeatureSidecar } from './auto-features.js';
 import { getMlShadowConfig } from './config.js';
 import {
   predictLiveFeatureSidecar,
@@ -48,12 +49,21 @@ export async function captureMlShadowForecasts(input: MlShadowCaptureInput): Pro
     }
     if (input.capturedAt > deadline.deadline) throw new Error('ML shadow heuristic capture is after the deadline');
 
-    const [modelRaw, sidecarRaw] = await Promise.all([
-      readUtf8WithinLimit(config.modelPath!, 16 * 1024 * 1024, 'model artifact'),
-      readUtf8WithinLimit(config.featureSidecarPath!, 64 * 1024 * 1024, 'feature sidecar'),
-    ]);
+    const modelRaw = await readUtf8WithinLimit(config.modelPath!, 16 * 1024 * 1024, 'model artifact');
     const artifact = JSON.parse(modelRaw) as PlayerFixtureModelArtifact;
     const predictor = new PlayerFixturePredictor(artifact);
+    const sidecarSource = config.autoGenerateFeatures
+      ? await ensureAutomaticFeatureSidecar(config, predictor, {
+        season,
+        gameweek: input.gameweek,
+        fixtures: input.engine.getAllFixtures(),
+      })
+      : {
+        path: config.featureSidecarPath!,
+        raw: await readUtf8WithinLimit(config.featureSidecarPath!, 64 * 1024 * 1024, 'feature sidecar'),
+        generated: false,
+      };
+    const sidecarRaw = sidecarSource.raw;
     const sidecar = JSON.parse(sidecarRaw) as LiveFeatureSidecar;
     validateLiveFeatureSidecar(sidecar, predictor, {
       season,
@@ -150,7 +160,7 @@ export async function captureMlShadowForecasts(input: MlShadowCaptureInput): Pro
       schemaVersion: predictor.schemaVersion,
       artifactSha256: sha256(modelRaw),
       featureSidecarSha256: sha256(sidecarRaw),
-      featureSidecarPath: config.featureSidecarPath,
+      featureSidecarPath: sidecarSource.path,
       featureCutoffGameweek: sidecar.latest_included_gameweek,
       error: null,
       forecasts,

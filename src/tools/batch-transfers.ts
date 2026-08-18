@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { tool } from '@openai/agents';
 import { getFPLClient } from '../api/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
-import { logDecision } from '../db/client.js';
+import { getFreeTransfers } from '../scheduler/decisions.js';
 
 const transferSchema = z.object({
   out: z.string().describe('Player to sell'),
@@ -12,11 +12,11 @@ const transferSchema = z.object({
 
 export const batchTransfersTool = tool({
   name: 'batch_transfers',
-  description: 'Plan and execute multiple transfers at once. Useful for wildcard or when making several changes. Shows combined analysis and total hit cost.',
+  description: 'Analyze multiple transfers or a Wildcard plan. This tool never executes live transfers.',
   parameters: z.object({
     transfers: z.array(transferSchema).min(1).max(15).describe('Array of transfers, each with "out" and "in" player names'),
     useWildcard: z.boolean().default(false).describe('Set true to use Wildcard chip (no hit cost)'),
-    confirm: z.boolean().default(false).describe('Set true to execute all transfers'),
+    confirm: z.boolean().default(false).describe('Set true to return a manual-action summary'),
   }),
   execute: async ({ transfers, useWildcard, confirm }) => {
     const client = getFPLClient();
@@ -39,8 +39,15 @@ export const batchTransfersTool = tool({
       };
     }
     
-    const freeTransfers = myTeam.transfers.limit - myTeam.transfers.made;
-    if (useWildcard && !myTeam.chips.some(chip => chip.name === 'wildcard' && chip.status_for_entry === 'available')) {
+    const freeTransfers = getFreeTransfers(myTeam);
+    const deadline = engine.getNextDeadline();
+    if (!deadline) return { error: 'No authoritative future deadline is available.' };
+    if (useWildcard && !myTeam.chips.some(chip =>
+      chip.name === 'wildcard'
+      && chip.status_for_entry === 'available'
+      && deadline.gameweek >= chip.start_event
+      && deadline.gameweek <= chip.stop_event
+    )) {
       return { error: 'Wildcard is not available for this gameweek.' };
     }
     let bank = myTeam.transfers.bank;
@@ -54,7 +61,7 @@ export const batchTransfersTool = tool({
       const player = engine.getPlayer(pick.element);
       if (player) {
         currentSquad.set(pick.element, player.team);
-        sellingPrices.set(pick.element, pick.selling_price ?? player.now_cost);
+        if (pick.selling_price !== undefined) sellingPrices.set(pick.element, pick.selling_price);
         const teamPlayers = squadByTeam.get(player.team) || new Set();
         teamPlayers.add(pick.element);
         squadByTeam.set(player.team, teamPlayers);
@@ -68,6 +75,7 @@ export const batchTransfersTool = tool({
       xpGain: number;
       priceChange: number;
       sellingPrice: number;
+      confidence: number;
     }[] = [];
     
     const errors: string[] = [];
@@ -125,7 +133,11 @@ export const batchTransfersTool = tool({
       }
       
       // Check budget
-      const sellingPrice = sellingPrices.get(outPlayer.id) ?? outPlayer.now_cost;
+      const sellingPrice = sellingPrices.get(outPlayer.id);
+      if (sellingPrice === undefined) {
+        errors.push(`Transfer ${i + 1}: Selling price is unavailable for ${outPlayer.web_name}`);
+        continue;
+      }
       const priceChange = sellingPrice - inPlayer.now_cost;
       if (bank + priceChange < 0) {
         errors.push(`Transfer ${i + 1}: Insufficient funds to buy ${inPlayer.web_name}`);
@@ -162,12 +174,13 @@ export const batchTransfersTool = tool({
         xpGain,
         priceChange,
         sellingPrice,
+        confidence: (outXP.confidence + inXP.confidence) / 2,
       });
     }
     
-    if (errors.length > 0 && validatedTransfers.length === 0) {
+    if (errors.length > 0) {
       return {
-        error: 'All transfers failed validation',
+        error: 'Batch transfer validation is all-or-nothing; no transfers were submitted',
         errors,
       };
     }
@@ -209,51 +222,17 @@ export const batchTransfersTool = tool({
     if (!confirm) {
       return {
         status: 'ANALYSIS_ONLY',
-        message: `Analyzed ${validatedTransfers.length} transfers. Call again with confirm=true to execute.`,
+        message: `Analyzed ${validatedTransfers.length} transfers. Call again with confirm=true for a manual-action summary.`,
         ...analysis,
         warning: hitCost > 0 && netXPGain < 0
           ? 'This set of transfers has negative expected value after hits.'
           : undefined,
       };
     }
-    
-    const currentGW = engine.getNextDeadline()?.gameweek ?? engine.getCurrentGameweek();
-    const result = await client.makeTransfers(
-      validatedTransfers.map(transfer => ({
-        playerOut: transfer.outPlayer!.id,
-        playerIn: transfer.inPlayer!.id,
-        purchasePrice: transfer.inPlayer!.now_cost,
-        sellingPrice: transfer.sellingPrice,
-      })),
-      currentGW,
-      useWildcard ? 'wildcard' : undefined
-    );
 
-    if (!result.success) {
-      return { status: 'FAILED', message: result.message, ...analysis };
-    }
-    
-    // Log the batch decision
-    await logDecision({
-      gameweek: currentGW,
-      decisionType: 'transfer',
-      action: JSON.stringify({
-        type: 'batch',
-        transfers: validatedTransfers.map(t => ({
-          out: t.outPlayer!.web_name,
-          in: t.inPlayer!.web_name,
-        })),
-        usedWildcard: useWildcard,
-      }),
-      reasoning: `Batch transfer: ${validatedTransfers.length} moves, net xP: ${netXPGain.toFixed(1)}`,
-      expectedPoints: totalXPGain,
-      rankBefore: null,
-      hitsTaken: extraTransfers,
-    });
-    
     return {
-      status: 'EXECUTED',
-      message: `${validatedTransfers.length} transfers executed successfully.`,
+      status: 'MANUAL_REQUIRED',
+      message: 'LLM tools are analysis-only. Review and apply this exact batch manually; autonomous execution is restricted to the deployment worker.',
       ...analysis,
     };
   },

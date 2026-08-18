@@ -1,34 +1,119 @@
-// Safety Limits for Autonomous Mode
+// Fail-closed safety policy shared by the worker and every mutating tool.
+import { existsSync } from 'node:fs';
+
+export type FplRunMode = 'shadow' | 'live';
+export type MutationKind = 'transfer' | 'lineup' | 'chip';
+
 export interface SafetyLimits {
+  runMode: FplRunMode;
+  expectedManagerId: number | null;
   maxTransfersPerWeek: number;
   minXPGainForHit: number;
+  maxTransferHitCost: number;
+  minTransferConfidence: number;
+  minLineupGain: number;
+  minLineupConfidence: number;
+  deadlineSafetyMinutes: number;
   autoExecuteTransfers: boolean;
   autoSetLineup: boolean;
   autoPlayChips: boolean;
   emergencyStop: boolean;
+  emergencyStopFile: string;
 }
 
-export function getSafetyLimits(): SafetyLimits {
+export interface RunnerTimingConfig {
+  pollIntervalMs: number;
+  preDeadlineHours: number;
+  deadlineNewsWindowMs: number;
+  deadlineNewsPollIntervalMs: number;
+  maxConsecutiveCycleFailures: number;
+}
+
+export function getSafetyLimits(env: NodeJS.ProcessEnv = process.env): SafetyLimits {
+  const runMode = optionalEnum(env, 'FPL_RUN_MODE', ['shadow', 'live'] as const, 'shadow');
+  const expectedManagerId = optionalInteger(env, 'FPL_EXPECTED_MANAGER_ID', 1, Number.MAX_SAFE_INTEGER);
+  if (runMode === 'live' && expectedManagerId === null) {
+    throw new Error('FPL_EXPECTED_MANAGER_ID is required when FPL_RUN_MODE=live');
+  }
+
+  const maxTransferHitCost = optionalInteger(env, 'MAX_TRANSFER_HIT_COST', 0, 16, 0);
+  if (maxTransferHitCost % 4 !== 0) throw new Error('MAX_TRANSFER_HIT_COST must be a multiple of 4');
+
   return {
-    maxTransfersPerWeek: parseInt(process.env.MAX_TRANSFERS_PER_WEEK || '2'),
-    minXPGainForHit: parseInt(process.env.MIN_XP_GAIN_FOR_HIT || '8'),
-    autoExecuteTransfers: process.env.AUTO_EXECUTE_TRANSFERS === 'true',
-    autoSetLineup: process.env.AUTO_SET_LINEUP !== 'false',
-    autoPlayChips: process.env.AUTO_PLAY_CHIPS === 'true',
-    emergencyStop: process.env.EMERGENCY_STOP === 'true',
+    runMode,
+    expectedManagerId,
+    maxTransfersPerWeek: optionalInteger(env, 'MAX_TRANSFERS_PER_WEEK', 1, 5, 1),
+    minXPGainForHit: optionalNumber(env, 'MIN_XP_GAIN_FOR_HIT', 0, 50, 8),
+    maxTransferHitCost,
+    minTransferConfidence: optionalNumber(env, 'MIN_TRANSFER_CONFIDENCE', 0.5, 1, 0.8),
+    minLineupGain: optionalNumber(env, 'MIN_LINEUP_GAIN', 0, 10, 0.5),
+    minLineupConfidence: optionalNumber(env, 'MIN_LINEUP_CONFIDENCE', 0.5, 1, 0.7),
+    deadlineSafetyMinutes: optionalInteger(env, 'DEADLINE_SAFETY_MINUTES', 5, 60, 15),
+    autoExecuteTransfers: optionalBoolean(env, 'AUTO_EXECUTE_TRANSFERS', false),
+    autoSetLineup: optionalBoolean(env, 'AUTO_SET_LINEUP', false),
+    autoPlayChips: optionalBoolean(env, 'AUTO_PLAY_CHIPS', false),
+    emergencyStop: optionalBoolean(env, 'EMERGENCY_STOP', true),
+    emergencyStopFile: env.FPL_EMERGENCY_STOP_FILE?.trim() || 'data/EMERGENCY_STOP',
   };
 }
 
-export function checkEmergencyStop(): boolean {
-  const limits = getSafetyLimits();
-  if (limits.emergencyStop) {
-    console.log('[SAFETY] Emergency stop is enabled. No actions will be taken.');
-    return true;
+export function getRunnerTimingConfig(env: NodeJS.ProcessEnv = process.env): RunnerTimingConfig {
+  const pollMinutes = optionalInteger(env, 'POLL_INTERVAL_MINUTES', 1, 180, 30);
+  const preDeadlineHours = optionalInteger(env, 'PRE_DEADLINE_HOURS', 1, 24, 2);
+  const newsWindowMinutes = optionalInteger(env, 'DEADLINE_NEWS_WINDOW_MINUTES', 15, 360, 90);
+  const newsPollMinutes = optionalInteger(env, 'DEADLINE_NEWS_POLL_MINUTES', 1, 60, 5);
+  if (newsPollMinutes >= newsWindowMinutes) {
+    throw new Error('DEADLINE_NEWS_POLL_MINUTES must be shorter than DEADLINE_NEWS_WINDOW_MINUTES');
   }
-  return false;
+  return {
+    pollIntervalMs: pollMinutes * 60_000,
+    preDeadlineHours,
+    deadlineNewsWindowMs: newsWindowMinutes * 60_000,
+    deadlineNewsPollIntervalMs: newsPollMinutes * 60_000,
+    maxConsecutiveCycleFailures: optionalInteger(
+      env,
+      'MAX_CONSECUTIVE_CYCLE_FAILURES',
+      1,
+      20,
+      3
+    ),
+  };
 }
 
-// Track transfers made this week
+export function getMutationPermission(
+  kind: MutationKind,
+  env: NodeJS.ProcessEnv = process.env,
+  fileExists: (path: string) => boolean = existsSync
+): { allowed: boolean; reason: string; limits: SafetyLimits } {
+  const limits = getSafetyLimits(env);
+  if (limits.emergencyStop || fileExists(limits.emergencyStopFile)) {
+    return { allowed: false, reason: 'Emergency stop enabled', limits };
+  }
+  if (limits.runMode !== 'live') {
+    return { allowed: false, reason: 'FPL_RUN_MODE is shadow', limits };
+  }
+  if (limits.expectedManagerId === null) {
+    return { allowed: false, reason: 'Expected manager is not configured', limits };
+  }
+  const enabled = kind === 'transfer'
+    ? limits.autoExecuteTransfers
+    : kind === 'lineup'
+      ? limits.autoSetLineup
+      : limits.autoPlayChips;
+  return enabled
+    ? { allowed: true, reason: `${kind} mutation enabled`, limits }
+    : { allowed: false, reason: `Automatic ${kind} mutations are disabled`, limits };
+}
+
+export function checkEmergencyStop(): boolean {
+  const permission = getMutationPermission('lineup');
+  const stopped = permission.reason === 'Emergency stop enabled';
+  if (stopped) console.log('[SAFETY] Emergency stop is enabled. No actions will be taken.');
+  return stopped;
+}
+
+// This counter is a same-process secondary guard. Durable operation state and a
+// process lock provide the authoritative cross-cycle protection.
 let transfersThisWeek = 0;
 let lastResetGameweek = 0;
 
@@ -40,60 +125,85 @@ export function resetWeeklyTransfers(currentGameweek: number): void {
   }
 }
 
-export function canMakeTransfer(): boolean {
+export function canMakeTransfers(count = 1): boolean {
   const limits = getSafetyLimits();
-  if (transfersThisWeek >= limits.maxTransfersPerWeek) {
-    console.log(`[SAFETY] Weekly transfer limit reached (${transfersThisWeek}/${limits.maxTransfersPerWeek})`);
+  if (!Number.isInteger(count) || count < 1) return false;
+  if (transfersThisWeek + count > limits.maxTransfersPerWeek) {
+    console.log(
+      `[SAFETY] Weekly transfer limit reached (${transfersThisWeek}+${count}/${limits.maxTransfersPerWeek})`
+    );
     return false;
   }
   return true;
 }
 
+export function canMakeTransfer(): boolean {
+  return canMakeTransfers(1);
+}
+
+export function recordTransfers(count: number): void {
+  if (!Number.isInteger(count) || count < 1) throw new Error(`Invalid recorded transfer count ${count}`);
+  transfersThisWeek += count;
+  console.log(`[SAFETY] ${count} transfer(s) recorded. Total this week: ${transfersThisWeek}`);
+}
+
 export function recordTransfer(): void {
-  transfersThisWeek++;
-  console.log(`[SAFETY] Transfer recorded. Total this week: ${transfersThisWeek}`);
+  recordTransfers(1);
 }
 
 export function validateTransfer(
   xpGain: number,
   hitCost: number,
   freeTransfers: number,
-  transfersMade: number = 0
+  plannedTransfers = 1,
+  confidence = 1
 ): { allowed: boolean; reason: string } {
-  const limits = getSafetyLimits();
-  
-  // Check emergency stop
-  if (limits.emergencyStop) {
-    return { allowed: false, reason: 'Emergency stop enabled' };
+  const permission = getMutationPermission('transfer');
+  const limits = permission.limits;
+  if (!permission.allowed) return { allowed: false, reason: permission.reason };
+  if (![xpGain, hitCost, confidence].every(Number.isFinite) || freeTransfers < 0) {
+    return { allowed: false, reason: 'Transfer plan contains non-finite safety inputs' };
   }
-  
-  // Check weekly limit
-  if (transfersMade >= limits.maxTransfersPerWeek || !canMakeTransfer()) {
+  if (!Number.isInteger(plannedTransfers) || plannedTransfers < 1 || !canMakeTransfers(plannedTransfers)) {
     return { allowed: false, reason: 'Weekly transfer limit reached' };
   }
-  
-  // Check auto-execute
-  if (!limits.autoExecuteTransfers) {
-    return { allowed: false, reason: 'Auto-execute transfers disabled' };
+  if (confidence < limits.minTransferConfidence) {
+    return {
+      allowed: false,
+      reason: `Plan confidence ${(confidence * 100).toFixed(0)}% is below ${(limits.minTransferConfidence * 100).toFixed(0)}%`,
+    };
   }
-  
-  // Check hit threshold
-  if (hitCost > 0) {
-    if (xpGain < limits.minXPGainForHit) {
-      return { 
-        allowed: false, 
-        reason: `xP gain (${xpGain.toFixed(1)}) below hit threshold (${limits.minXPGainForHit})` 
-      };
-    }
+  if (hitCost < 0 || hitCost > limits.maxTransferHitCost || hitCost % 4 !== 0) {
+    return { allowed: false, reason: `Transfer hit cost ${hitCost} exceeds allowed ${limits.maxTransferHitCost}` };
   }
-  
-  // Net gain must be positive
+
   const netGain = xpGain - hitCost;
-  if (netGain <= 0) {
-    return { allowed: false, reason: `Negative net gain: ${netGain.toFixed(1)}` };
+  if (netGain <= 0) return { allowed: false, reason: `Non-positive net gain: ${netGain.toFixed(1)}` };
+  if (hitCost > 0 && netGain < limits.minXPGainForHit) {
+    return {
+      allowed: false,
+      reason: `Net xP gain (${netGain.toFixed(1)}) below hit threshold (${limits.minXPGainForHit})`,
+    };
   }
-  
   return { allowed: true, reason: 'Transfer approved' };
+}
+
+export function validateLineup(projectedGain: number, confidence: number): { allowed: boolean; reason: string } {
+  const permission = getMutationPermission('lineup');
+  if (!permission.allowed) return { allowed: false, reason: permission.reason };
+  if (!Number.isFinite(projectedGain) || projectedGain < permission.limits.minLineupGain) {
+    return {
+      allowed: false,
+      reason: `Lineup gain ${projectedGain.toFixed(1)} is below ${permission.limits.minLineupGain}`,
+    };
+  }
+  if (!Number.isFinite(confidence) || confidence < permission.limits.minLineupConfidence) {
+    return {
+      allowed: false,
+      reason: `Lineup confidence ${(confidence * 100).toFixed(0)}% is below ${(permission.limits.minLineupConfidence * 100).toFixed(0)}%`,
+    };
+  }
+  return { allowed: true, reason: 'Lineup mutation approved' };
 }
 
 export function validateChip(
@@ -101,23 +211,78 @@ export function validateChip(
   recommended: boolean,
   confidence: number
 ): { allowed: boolean; reason: string } {
-  const limits = getSafetyLimits();
-  
-  if (limits.emergencyStop) {
-    return { allowed: false, reason: 'Emergency stop enabled' };
-  }
-  
-  if (!limits.autoPlayChips) {
-    return { allowed: false, reason: 'Auto-play chips disabled (logged only)' };
-  }
-  
-  if (!recommended) {
-    return { allowed: false, reason: 'Chip not recommended by optimizer' };
-  }
-  
-  if (confidence < 0.7) {
+  const permission = getMutationPermission('chip');
+  if (!permission.allowed) return { allowed: false, reason: permission.reason };
+  if (!recommended) return { allowed: false, reason: 'Chip not recommended by optimizer' };
+  if (!Number.isFinite(confidence) || confidence < 0.8) {
     return { allowed: false, reason: `Confidence too low: ${(confidence * 100).toFixed(0)}%` };
   }
-  
-  return { allowed: true, reason: 'Chip play approved' };
+  return { allowed: true, reason: `${chip} play approved` };
+}
+
+function optionalBoolean(env: NodeJS.ProcessEnv, name: string, fallback: boolean): boolean {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  if (raw !== 'true' && raw !== 'false') throw new Error(`${name} must be exactly true or false`);
+  return raw === 'true';
+}
+
+function optionalInteger(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  minimum: number,
+  maximum: number,
+  fallback: number
+): number;
+function optionalInteger(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  minimum: number,
+  maximum: number
+): number | null;
+function optionalInteger(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  minimum: number,
+  maximum: number,
+  fallback: number | null = null
+): number | null {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  if (!/^\d+$/.test(raw)) throw new Error(`${name} must be an integer`);
+  const value = Number(raw);
+  if (!Number.isSafeInteger(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function optionalNumber(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  minimum: number,
+  maximum: number,
+  fallback: number
+): number {
+  const raw = env[name]?.trim();
+  if (!raw) return fallback;
+  if (!/^(?:\d+|\d*\.\d+)$/.test(raw)) throw new Error(`${name} must be a number`);
+  const value = Number(raw);
+  if (!Number.isFinite(value) || value < minimum || value > maximum) {
+    throw new Error(`${name} must be between ${minimum} and ${maximum}`);
+  }
+  return value;
+}
+
+function optionalEnum<const T extends readonly string[]>(
+  env: NodeJS.ProcessEnv,
+  name: string,
+  values: T,
+  fallback: T[number]
+): T[number] {
+  const raw = env[name]?.trim() || fallback;
+  if (!(values as readonly string[]).includes(raw)) {
+    throw new Error(`${name} must be one of ${values.join(', ')}`);
+  }
+  return raw as T[number];
 }

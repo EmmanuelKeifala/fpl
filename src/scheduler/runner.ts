@@ -2,7 +2,7 @@
 import 'dotenv/config';
 import { getFPLClient, getFPLClientFromEnv } from '../api/client.js';
 import { describeSeasonConfig, getSeasonConfigWarnings } from '../strategy/season.js';
-import { getOptimizationEngine, resetOptimizationEngine } from '../engine/optimizer.js';
+import { getOptimizationEngine, refreshOptimizationEngine } from '../engine/optimizer.js';
 import {
   buildDecisionContext,
   gatherIntelligence,
@@ -10,12 +10,17 @@ import {
   selectOptimalCaptain, 
   selectOptimalLineup,
   evaluateChips,
+  getActiveLineupChip,
+  calculateCurrentLineupExpectedPoints,
   type DecisionContext 
 } from './decisions.js';
 import { 
   getSafetyLimits, 
+  getRunnerTimingConfig,
+  getMutationPermission,
   checkEmergencyStop, 
   validateTransfer, 
+  validateLineup,
   validateChip, 
   resetWeeklyTransfers,
   recordTransfer 
@@ -28,10 +33,27 @@ import {
   notifyAlert, 
   notifySummary 
 } from './notify.js';
+import { hasRemoteNotificationConfig } from './notify.js';
 import { getGameweekSnapshot, logDecision, saveGameweekSnapshot } from '../db/client.js';
 import type { GameweekHistory, ChipUsage } from '../api/types.js';
 import { captureLearningSnapshot, reconcileFinishedGameweek } from './learning.js';
 import { captureMlShadowForecasts } from '../ml/shadow-forecasts.js';
+import { createMutationGuard } from './mutation-guard.js';
+import { acquireExclusiveFileLock } from './process-lock.js';
+import { writeRunnerHealth, type RunnerHealthStatus } from './health.js';
+import { getLlmDecisionConfig } from '../llm/config.js';
+import { llmReviewAllowsMutation } from '../llm/decision-reviewer.js';
+import {
+  llmReviewSummary,
+  reviewGameweekPlanWithLlm,
+  reviewLineupWithLlm,
+  reviewTransferPlanWithLlm,
+} from './llm-review.js';
+import { getKapsoWhatsAppConfig } from '../notifications/kapso-config.js';
+import {
+  flushKapsoWhatsAppUpdates,
+  queueKapsoWhatsAppUpdate,
+} from '../notifications/kapso.js';
 
 type RunnerPhase = 'monitor' | 'plan' | 'execute' | 'post-deadline';
 
@@ -42,10 +64,11 @@ interface RunnerState {
   lastGWProcessed: number;
 }
 
-const POLL_INTERVAL = parseInt(process.env.POLL_INTERVAL_MINUTES || '30') * 60 * 1000;
-const PRE_DEADLINE_HOURS = parseInt(process.env.PRE_DEADLINE_HOURS || '2');
-const DEADLINE_NEWS_WINDOW = parseInt(process.env.DEADLINE_NEWS_WINDOW_MINUTES || '90') * 60 * 1000;
-const DEADLINE_NEWS_POLL_INTERVAL = parseInt(process.env.DEADLINE_NEWS_POLL_MINUTES || '5') * 60 * 1000;
+const TIMING = getRunnerTimingConfig();
+const POLL_INTERVAL = TIMING.pollIntervalMs;
+const PRE_DEADLINE_HOURS = TIMING.preDeadlineHours;
+const DEADLINE_NEWS_WINDOW = TIMING.deadlineNewsWindowMs;
+const DEADLINE_NEWS_POLL_INTERVAL = TIMING.deadlineNewsPollIntervalMs;
 
 let runnerState: RunnerState = {
   phase: 'monitor',
@@ -55,6 +78,29 @@ let runnerState: RunnerState = {
 };
 
 let cycleInProgress = false;
+let stopping = false;
+let timeoutId: NodeJS.Timeout | null = null;
+let activeCycle: Promise<void> | null = null;
+let releaseRunnerLock: (() => void) | null = null;
+let cycleHadError: string | null = null;
+const runnerStartedAt = new Date().toISOString();
+let lastCycleStartedAt: string | null = null;
+let lastCycleCompletedAt: string | null = null;
+let consecutiveCycleFailures = 0;
+
+function updateHealth(status: RunnerHealthStatus, error: string | null = null): void {
+  writeRunnerHealth(process.env.FPL_HEALTH_PATH?.trim() || 'data/runner-health.json', {
+    pid: process.pid,
+    mode: getSafetyLimits().runMode,
+    status,
+    cycleCount: runnerState.cycleCount,
+    startedAt: runnerStartedAt,
+    updatedAt: new Date().toISOString(),
+    lastCycleStartedAt,
+    lastCycleCompletedAt,
+    lastError: error,
+  });
+}
 
 function getPhase(hoursToDeadline: number, isPostDeadline: boolean): RunnerPhase {
   if (isPostDeadline) return 'post-deadline';
@@ -69,15 +115,45 @@ async function initialize(): Promise<boolean> {
   console.log('========================================\n');
 
   const limits = getSafetyLimits();
+  if (limits.runMode === 'live' && !hasRemoteNotificationConfig()) {
+    throw new Error('Live mode requires a configured remote alert channel');
+  }
+  const kapsoConfig = getKapsoWhatsAppConfig();
+  if (limits.runMode === 'live' && !kapsoConfig.enabled) {
+    throw new Error('Live mode requires Kapso WhatsApp plan and action notifications');
+  }
   console.log(`[CONFIG] Safety Limits:`);
+  console.log(`  - Run Mode: ${limits.runMode}`);
+  console.log(`  - Expected Manager: ${limits.expectedManagerId ?? 'not configured'}`);
   console.log(`  - Max Transfers/Week: ${limits.maxTransfersPerWeek}`);
   console.log(`  - Min xP Gain for Hit: ${limits.minXPGainForHit}`);
   console.log(`  - Auto-Execute Transfers: ${limits.autoExecuteTransfers}`);
   console.log(`  - Auto-Set Lineup: ${limits.autoSetLineup}`);
   console.log(`  - Auto-Play Chips: ${limits.autoPlayChips}`);
   console.log(`  - Emergency Stop: ${limits.emergencyStop}`);
+  console.log(`  - Emergency Stop File: ${limits.emergencyStopFile}`);
+  console.log(`  - Maximum Hit Cost: ${limits.maxTransferHitCost}`);
+  console.log(`  - Minimum Transfer Confidence: ${(limits.minTransferConfidence * 100).toFixed(0)}%`);
+  console.log(`  - Deadline Safety Margin: ${limits.deadlineSafetyMinutes} minutes`);
   console.log(`  - Poll Interval: ${POLL_INTERVAL / 60000} minutes`);
   console.log(`  - Pre-Deadline Hours: ${PRE_DEADLINE_HOURS}h\n`);
+
+  console.log(`[CONFIG] Kapso WhatsApp Observability:`);
+  console.log(`  - Enabled: ${kapsoConfig.enabled}`);
+  console.log(`  - Mode: ${kapsoConfig.mode ?? 'not configured'}`);
+  console.log(`  - Credentials Complete: ${kapsoConfig.enabled}\n`);
+
+  const llmConfig = getLlmDecisionConfig();
+  console.log(`[CONFIG] LLM Decision Reviewer:`);
+  console.log(`  - Enabled: ${llmConfig.enabled}`);
+  console.log(`  - Required For Live: ${llmConfig.requiredForLive}`);
+  console.log(`  - Model: ${llmConfig.model ?? 'not configured'}`);
+  console.log(`  - API Key Configured: ${llmConfig.apiKeyConfigured}`);
+  console.log(`  - Minimum Approval Confidence: ${(llmConfig.minimumConfidence * 100).toFixed(0)}%\n`);
+  if (limits.runMode === 'live' && llmConfig.requiredForLive) {
+    if (!llmConfig.enabled) throw new Error('Live mode requires FPL_LLM_ENABLED=true');
+    if (!llmConfig.apiKeyConfigured) throw new Error('Live mode requires OPENAI_API_KEY for LLM decision review');
+  }
   
   if (checkEmergencyStop()) {
     console.log('[RUNNER] Emergency stop is enabled. Runner will monitor but not execute actions.\n');
@@ -135,8 +211,7 @@ async function refreshData(): Promise<void> {
   
   // Clear both layers so late price, status, and deadline updates are visible.
   getFPLClient().clearCache();
-  resetOptimizationEngine();
-  await getOptimizationEngine();
+  await refreshOptimizationEngine();
   
   console.log('[DATA] Bootstrap and fixture data refreshed.\n');
 }
@@ -206,6 +281,47 @@ async function runPlanPhase(context: DecisionContext): Promise<void> {
   for (const chip of chipRecommendations) {
     console.log(`  - ${chip.chip}: ${chip.reasoning} (Confidence: ${(chip.confidence * 100).toFixed(0)}%)`);
   }
+
+  const llmReview = await reviewGameweekPlanWithLlm({
+    context,
+    transferPlan,
+    captain: {
+      id: captainResult.captain.id,
+      name: captainResult.captain.web_name,
+      expectedPoints: captainResult.xp,
+    },
+    chips: chipRecommendations,
+  });
+  console.log(`[LLM] Gameweek plan review: ${llmReviewSummary(llmReview)}`);
+
+  const transferSummary = transferPlan.transfers.length > 0
+    ? transferPlan.transfers.map(transfer => `${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`).join(', ')
+    : 'Hold transfers';
+  const planFingerprint = [
+    context.season,
+    context.gameweek,
+    transferSummary,
+    captainResult.captain.id,
+    chipRecommendations.map(chip => chip.chip).sort().join(','),
+    llmReviewSummary(llmReview),
+  ].join('|');
+  queueKapsoWhatsAppUpdate({
+    season: context.season,
+    gameweek: context.gameweek,
+    stage: 'plan',
+    action: 'gameweek-plan',
+    status: limits.runMode === 'shadow' ? 'shadow' : 'planned',
+    summary: transferSummary,
+    details: {
+      Captain: captainResult.captain.web_name,
+      'Projected net gain': `${transferPlan.netGain.toFixed(1)} xP`,
+      Chips: chipRecommendations.map(chip => chip.chip),
+      'LLM review': llmReviewSummary(llmReview),
+      Deadline: context.deadline?.toISOString() ?? 'unavailable',
+    },
+    runMode: limits.runMode,
+    dedupeKey: `plan:${planFingerprint}`,
+  });
   
   // Notify all recommendations
   await notify({
@@ -219,6 +335,7 @@ async function runPlanPhase(context: DecisionContext): Promise<void> {
       'Captain': captainResult.captain.web_name,
       'Chips Recommended': chipRecommendations.length,
       'Team Health Alerts': context.teamHealth.alerts.length,
+      'LLM Review': llmReviewSummary(llmReview),
     },
     timestamp: new Date(),
   });
@@ -246,16 +363,44 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
       console.log(`  - ${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`);
     }
 
-    const validation = validateTransfer(
+    const deterministicValidation = validateTransfer(
       totalXPGain,
       hitCost,
       context.freeTransfers,
-      context.myTeam!.transfers.made
+      transferPlan.length,
+      optimizedPlan.confidence
     );
+    const llmReview = await reviewTransferPlanWithLlm(context, optimizedPlan);
+    const llmAllowed = llmReviewAllowsMutation(llmReview);
+    const validation = llmAllowed
+      ? deterministicValidation
+      : { allowed: false, reason: `LLM review did not approve: ${llmReviewSummary(llmReview)}` };
     
     console.log(`  Validation: ${validation.allowed ? 'APPROVED' : 'BLOCKED'} - ${validation.reason}`);
+    console.log(`  LLM review: ${llmReviewSummary(llmReview)}`);
     
     if (validation.allowed) {
+      const actionKey = `transfer:${context.season}:${context.gameweek}:cycle-${runnerState.cycleCount}`;
+      const transferSummary = transferPlan
+        .map(transfer => `${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`)
+        .join(', ');
+      queueKapsoWhatsAppUpdate({
+        season: context.season,
+        gameweek: context.gameweek,
+        stage: 'before',
+        action: 'transfer',
+        status: 'starting',
+        summary: transferSummary,
+        details: {
+          'Net gain': `${optimizedPlan.netGain.toFixed(1)} xP`,
+          'Hit cost': hitCost,
+          Confidence: `${Math.round(optimizedPlan.confidence * 100)}%`,
+          'LLM review': llmReviewSummary(llmReview),
+        },
+        runMode: limits.runMode,
+        dedupeKey: `${actionKey}:before`,
+        sequenceKey: actionKey,
+      });
       try {
         const client = getFPLClient();
         const result = await client.makeTransfers(
@@ -265,12 +410,14 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
             purchasePrice: transfer.playerIn.now_cost,
             sellingPrice: transfer.sellingPrice,
           })),
-          context.gameweek
+          createMutationGuard(context.myTeam!, context.season, context.gameweek, context.deadline)
         );
         
         if (result.success) {
           for (const _transfer of transferPlan) recordTransfer();
           await logDecision({
+            season: context.season,
+            managerId: context.managerId,
             gameweek: context.gameweek,
             decisionType: 'transfer',
             action: JSON.stringify({
@@ -282,7 +429,7 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
                 playerIn: transfer.playerIn.web_name,
               })),
             }),
-            reasoning: `${optimizedPlan.horizon}-GW full-squad optimization; net gain ${optimizedPlan.netGain.toFixed(1)} xP`,
+            reasoning: `${optimizedPlan.horizon}-GW full-squad optimization; net gain ${optimizedPlan.netGain.toFixed(1)} xP; LLM ${llmReviewSummary(llmReview)}`,
             expectedPoints: totalXPGain,
             hitsTaken: hitCost / 4,
             createdAt: new Date(),
@@ -290,18 +437,57 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
           for (const transfer of transferPlan) {
             await notifyTransfer(transfer.playerOut, transfer.playerIn, transfer.xpGain, hitCost);
           }
+          queueKapsoWhatsAppUpdate({
+            season: context.season,
+            gameweek: context.gameweek,
+            stage: 'after',
+            action: 'transfer',
+            status: 'confirmed',
+            summary: transferSummary,
+            details: { Result: result.message },
+            runMode: limits.runMode,
+            dedupeKey: `${actionKey}:after:confirmed`,
+            sequenceKey: actionKey,
+          });
           console.log('[EXECUTE] Transfer plan executed successfully!\n');
         } else {
           console.error('[EXECUTE] Transfer failed:', result.message);
+          queueKapsoWhatsAppUpdate({
+            season: context.season,
+            gameweek: context.gameweek,
+            stage: 'after',
+            action: 'transfer',
+            status: result.outcome === 'unknown' ? 'unknown' : 'failed',
+            summary: transferSummary,
+            details: { Result: result.message },
+            runMode: limits.runMode,
+            dedupeKey: `${actionKey}:after:${result.outcome === 'unknown' ? 'unknown' : 'failed'}`,
+            sequenceKey: actionKey,
+          });
           await notifyAlert('Transfer Failed', result.message);
+          if (result.outcome === 'unknown') return;
         }
       } catch (error) {
         console.error('[EXECUTE] Transfer failed:', error);
+        queueKapsoWhatsAppUpdate({
+          season: context.season,
+          gameweek: context.gameweek,
+          stage: 'after',
+          action: 'transfer',
+          status: 'failed',
+          summary: transferSummary,
+          details: { Result: error instanceof Error ? error.message : String(error) },
+          runMode: limits.runMode,
+          dedupeKey: `${actionKey}:after:exception`,
+          sequenceKey: actionKey,
+        });
         await notifyAlert('Transfer Failed', `Failed to execute: ${error}`);
       }
     } else {
       // Log the decision even if not executed
       await logDecision({
+        season: context.season,
+        managerId: context.managerId,
         gameweek: context.gameweek,
         decisionType: 'transfer',
         action: transferPlan.map(transfer => `${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`).join(', '),
@@ -318,36 +504,92 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
   const client = getFPLClient();
   const latestTeam = await client.getMyTeam();
   const lineup = await selectOptimalLineup(latestTeam);
-  const chipRecommendations = await evaluateChips(latestTeam, context.gameweek);
+  const activeChip = getActiveLineupChip(latestTeam);
+  const chipRecommendations = activeChip ? [] : await evaluateChips(latestTeam, context.gameweek, lineup);
   const supportedChip = chipRecommendations.find(chip =>
-    (chip.chip === 'bboost' || chip.chip === '3xc') &&
-    validateChip(chip.chip, chip.recommended, chip.confidence).allowed
+    (chip.chip === 'bboost' || chip.chip === '3xc')
+    && validateChip(chip.chip, chip.recommended, chip.confidence).allowed
   );
-  const chip = supportedChip?.chip as 'bboost' | '3xc' | undefined;
+  const newChip = supportedChip?.chip as 'bboost' | '3xc' | undefined;
+  const submittedChip = activeChip ?? newChip ?? null;
 
-  if (limits.autoSetLineup && !checkEmergencyStop()) {
-    const currentPicks = new Map(latestTeam.picks.map(pick => [pick.element, pick]));
-    const changed = lineup.selection.some(pick => {
-      const current = currentPicks.get(pick.element);
-      return !current || current.position !== pick.position || current.is_captain !== pick.isCaptain || current.is_vice_captain !== pick.isViceCaptain;
-    });
+  const currentPicks = new Map(latestTeam.picks.map(pick => [pick.element, pick]));
+  const changed = lineup.selection.some(pick => {
+    const current = currentPicks.get(pick.element);
+    return !current || current.position !== pick.position || current.is_captain !== pick.isCaptain || current.is_vice_captain !== pick.isViceCaptain;
+  });
+  const currentLineupPoints = await calculateCurrentLineupExpectedPoints(latestTeam);
+  const lineupPermission = changed
+    ? validateLineup(lineup.expectedPoints - currentLineupPoints, lineup.confidence)
+    : { allowed: true, reason: 'Lineup unchanged' };
+  const lineupLlmReview = changed || newChip
+    ? await reviewLineupWithLlm({
+      context,
+      lineup,
+      currentExpectedPoints: currentLineupPoints,
+      chip: newChip ?? null,
+      chipExpectedGain: supportedChip?.expectedGain ?? 0,
+    })
+    : null;
+  const lineupLlmAllowed = lineupLlmReview ? llmReviewAllowsMutation(lineupLlmReview) : true;
+  if (lineupLlmReview) console.log(`[LLM] Lineup review: ${llmReviewSummary(lineupLlmReview)}`);
+  if (lineupPermission.allowed && lineupLlmAllowed && (getMutationPermission('lineup').allowed || (!changed && newChip))) {
 
-    if (changed || chip) {
-      const result = await client.updateTeam(lineup.selection, chip ?? null);
-      if (!result.success) {
-        await notifyAlert('Team Update Failed', result.message);
-      } else {
+    if (changed || newChip) {
+      const action = newChip ? 'chip' : 'lineup';
+      const actionKey = `${action}:${context.season}:${context.gameweek}:cycle-${runnerState.cycleCount}`;
+      const lineupSummary = `Captain ${lineup.captain.web_name}; vice ${lineup.viceCaptain.web_name}${newChip ? `; chip ${newChip}` : ''}`;
+      queueKapsoWhatsAppUpdate({
+        season: context.season,
+        gameweek: context.gameweek,
+        stage: 'before',
+        action,
+        status: 'starting',
+        summary: lineupSummary,
+        details: {
+          'Starting XI': lineup.startingXI.map(player => player.web_name),
+          Bench: lineup.bench.map(player => player.web_name),
+          'Expected points': lineup.expectedPoints.toFixed(1),
+          'LLM review': lineupLlmReview ? llmReviewSummary(lineupLlmReview) : 'not required',
+        },
+        runMode: limits.runMode,
+        dedupeKey: `${actionKey}:before`,
+        sequenceKey: actionKey,
+      });
+      try {
+        const result = await client.updateTeam(
+          lineup.selection,
+          createMutationGuard(latestTeam, context.season, context.gameweek, context.deadline),
+          submittedChip
+        );
+        if (!result.success) {
+          queueKapsoWhatsAppUpdate({
+            season: context.season,
+            gameweek: context.gameweek,
+            stage: 'after',
+            action,
+            status: result.outcome === 'unknown' ? 'unknown' : 'failed',
+            summary: lineupSummary,
+            details: { Result: result.message },
+            runMode: limits.runMode,
+            dedupeKey: `${actionKey}:after:${result.outcome === 'unknown' ? 'unknown' : 'failed'}`,
+            sequenceKey: actionKey,
+          });
+          await notifyAlert('Team Update Failed', result.message);
+        } else {
         await logDecision({
+          season: context.season,
+          managerId: context.managerId,
           gameweek: context.gameweek,
-          decisionType: chip ? 'chip' : 'captain',
+          decisionType: newChip ? 'chip' : 'captain',
           action: JSON.stringify({
             captain: lineup.captain.web_name,
             viceCaptain: lineup.viceCaptain.web_name,
             startingXI: lineup.startingXI.map(player => player.web_name),
             bench: lineup.bench.map(player => player.web_name),
-            chip: chip ?? null,
+            chip: submittedChip,
           }),
-          reasoning: `Highest projected legal XI (${lineup.expectedPoints.toFixed(1)} xP)`,
+          reasoning: `Highest projected legal XI (${lineup.expectedPoints.toFixed(1)} xP); LLM ${lineupLlmReview ? llmReviewSummary(lineupLlmReview) : 'not required'}`,
           expectedPoints: lineup.expectedPoints,
           hitsTaken: 0,
           createdAt: new Date(),
@@ -355,12 +597,44 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
         console.log(`[EXECUTE] Lineup set. Captain ${lineup.captain.web_name}, vice ${lineup.viceCaptain.web_name}.`);
         await notifyCaptain(lineup.captain, lineup.captainExpectedPoints, [lineup.viceCaptain.web_name]);
         if (supportedChip) await notifyChip(supportedChip.chip, context.gameweek, supportedChip.expectedGain, true);
+          queueKapsoWhatsAppUpdate({
+            season: context.season,
+            gameweek: context.gameweek,
+            stage: 'after',
+            action,
+            status: 'confirmed',
+            summary: lineupSummary,
+            details: { Result: result.message },
+            runMode: limits.runMode,
+            dedupeKey: `${actionKey}:after:confirmed`,
+            sequenceKey: actionKey,
+          });
+        }
+      } catch (error) {
+        queueKapsoWhatsAppUpdate({
+          season: context.season,
+          gameweek: context.gameweek,
+          stage: 'after',
+          action,
+          status: 'failed',
+          summary: lineupSummary,
+          details: { Result: error instanceof Error ? error.message : String(error) },
+          runMode: limits.runMode,
+          dedupeKey: `${actionKey}:after:exception`,
+          sequenceKey: actionKey,
+        });
+        throw error;
       }
     } else {
       console.log('[EXECUTE] Existing lineup and captaincy are already optimal.');
     }
   } else {
-    console.log('[EXECUTE] Automatic lineup management is disabled.');
+    const reason = !lineupPermission.allowed
+      ? lineupPermission.reason
+      : !lineupLlmAllowed
+        ? `LLM review did not approve: ${llmReviewSummary(lineupLlmReview!)}`
+        : 'Lineup mutation permission is disabled';
+    console.log(`[EXECUTE] Lineup mutation blocked: ${reason}.`);
   }
 }
 
@@ -418,12 +692,20 @@ async function runPostDeadline(context: DecisionContext): Promise<void> {
     return;
   }
 
-  const existingSnapshot = await getGameweekSnapshot(context.gameweek);
+  const client = getFPLClient();
+  const managerId = client.getManagerId();
+  if (!managerId) {
+    console.log('[POST] No manager ID available, skipping snapshot.\n');
+    return;
+  }
+  const season = (await getOptimizationEngine()).getSeasonConfig().season;
+  const existingSnapshot = await getGameweekSnapshot(season, managerId, context.gameweek);
   if (existingSnapshot) {
     try {
       await reconcileFinishedGameweek(context.gameweek);
     } catch (error) {
       console.error(`[LEARNING] Failed to reconcile GW${context.gameweek} forecasts:`, error);
+      return;
     }
     runnerState.lastGWProcessed = context.gameweek;
     console.log('[POST] Snapshot already exists for this gameweek.\n');
@@ -431,19 +713,13 @@ async function runPostDeadline(context: DecisionContext): Promise<void> {
   }
   
   try {
-    const client = getFPLClient();
-    const managerId = client.getManagerId();
-    
-    if (!managerId) {
-      console.log('[POST] No manager ID available, skipping snapshot.\n');
-      return;
-    }
-    
     const history = await client.getEntryHistory(managerId);
     const currentGWHistory = history.current.find((h: GameweekHistory) => h.event === context.gameweek);
     
     if (currentGWHistory) {
       await saveGameweekSnapshot({
+        season,
+        managerId,
         gameweek: context.gameweek,
         totalPoints: currentGWHistory.total_points,
         overallRank: currentGWHistory.overall_rank,
@@ -462,6 +738,7 @@ async function runPostDeadline(context: DecisionContext): Promise<void> {
         await reconcileFinishedGameweek(context.gameweek);
       } catch (error) {
         console.error(`[LEARNING] Failed to reconcile GW${context.gameweek} forecasts:`, error);
+        return;
       }
       
       await notifySummary(
@@ -470,6 +747,21 @@ async function runPostDeadline(context: DecisionContext): Promise<void> {
         currentGWHistory.overall_rank,
         0
       );
+      queueKapsoWhatsAppUpdate({
+        season: context.season,
+        gameweek: context.gameweek,
+        stage: 'after',
+        action: 'gameweek-summary',
+        status: 'confirmed',
+        summary: `${currentGWHistory.points} points; overall rank ${currentGWHistory.overall_rank.toLocaleString()}`,
+        details: {
+          Transfers: currentGWHistory.event_transfers,
+          'Transfer cost': currentGWHistory.event_transfers_cost,
+          'Points on bench': currentGWHistory.points_on_bench,
+        },
+        runMode: getSafetyLimits().runMode,
+        dedupeKey: `summary:${context.season}:${context.gameweek}`,
+      });
       
       runnerState.lastGWProcessed = context.gameweek;
       console.log(`[POST] GW${context.gameweek} snapshot saved. Points: ${currentGWHistory.points}, Rank: ${currentGWHistory.overall_rank}\n`);
@@ -480,6 +772,7 @@ async function runPostDeadline(context: DecisionContext): Promise<void> {
 }
 
 async function runCycle(): Promise<void> {
+  cycleHadError = null;
   runnerState.cycleCount++;
   const cycleStart = new Date();
   console.log(`\n${'='.repeat(50)}`);
@@ -548,6 +841,7 @@ async function runCycle(): Promise<void> {
     }
   } catch (error) {
     console.error('[CYCLE] Error in cycle:', error);
+    cycleHadError = error instanceof Error ? error.message : String(error);
     await notifyAlert('Cycle Error', `Error in cycle ${runnerState.cycleCount}: ${error}`);
   }
   
@@ -563,8 +857,29 @@ async function safeRunCycle(): Promise<void> {
   }
 
   cycleInProgress = true;
+  lastCycleStartedAt = new Date().toISOString();
+  updateHealth('running');
   try {
     await runCycle();
+    lastCycleCompletedAt = new Date().toISOString();
+    if (cycleHadError) {
+      consecutiveCycleFailures++;
+      updateHealth('error', cycleHadError);
+      console.error(
+        `[HEALTH] Consecutive failed cycles: ${consecutiveCycleFailures}/${TIMING.maxConsecutiveCycleFailures}`
+      );
+      if (consecutiveCycleFailures >= TIMING.maxConsecutiveCycleFailures) {
+        throw new Error(
+          `Worker exceeded ${TIMING.maxConsecutiveCycleFailures} consecutive failed cycles: ${cycleHadError}`
+        );
+      }
+    } else {
+      consecutiveCycleFailures = 0;
+      updateHealth('idle');
+    }
+  } catch (error) {
+    updateHealth('error', error instanceof Error ? error.message : String(error));
+    throw error;
   } finally {
     cycleInProgress = false;
   }
@@ -578,34 +893,67 @@ async function nextPollInterval(): Promise<number> {
 }
 
 async function main(): Promise<void> {
+  const runOnce = process.argv.includes('--once');
+  releaseRunnerLock = acquireExclusiveFileLock(
+    process.env.FPL_RUNNER_LOCK_PATH?.trim() || 'data/fpl-runner.lock',
+    'FPL runner'
+  );
+  updateHealth('starting');
+  process.once('SIGINT', () => void shutdown('SIGINT'));
+  process.once('SIGTERM', () => void shutdown('SIGTERM'));
+
   const initialized = await initialize();
   
   if (!initialized) {
     console.error('[MAIN] Failed to initialize. Exiting.');
-    process.exit(1);
+    throw new Error('Runner initialization failed');
   }
   
   console.log('[MAIN] Starting polling loop...\n');
   
-  let timeoutId: NodeJS.Timeout;
   const poll = async () => {
-    await safeRunCycle();
-    timeoutId = setTimeout(poll, await nextPollInterval());
+    if (stopping) return;
+    activeCycle = safeRunCycle();
+    try {
+      await activeCycle;
+    } finally {
+      activeCycle = null;
+      if (!stopping && !runOnce) {
+        const interval = await nextPollInterval().catch(error => {
+          console.error('[MAIN] Failed to calculate next poll interval:', error);
+          return POLL_INTERVAL;
+        });
+        timeoutId = setTimeout(() => void poll(), interval);
+      }
+    }
   };
   await poll();
-  
-  // Handle graceful shutdown
-  process.on('SIGINT', () => {
-    console.log('\n[MAIN] Received SIGINT. Shutting down gracefully...');
-    clearTimeout(timeoutId);
-    process.exit(0);
-  });
-  
-  process.on('SIGTERM', () => {
-    console.log('\n[MAIN] Received SIGTERM. Shutting down gracefully...');
-    clearTimeout(timeoutId);
-    process.exit(0);
-  });
+  if (runOnce) {
+    await flushKapsoWhatsAppUpdates();
+    releaseRunnerLock?.();
+    releaseRunnerLock = null;
+    console.log('[MAIN] One-cycle runner check complete.');
+  }
 }
 
-main().catch(console.error);
+async function shutdown(signal: 'SIGINT' | 'SIGTERM'): Promise<void> {
+  if (stopping) return;
+  stopping = true;
+  updateHealth('stopping');
+  console.log(`\n[MAIN] Received ${signal}. Waiting for the active cycle to finish...`);
+  if (timeoutId) clearTimeout(timeoutId);
+  if (activeCycle) await activeCycle;
+  const notificationsFlushed = await flushKapsoWhatsAppUpdates();
+  if (!notificationsFlushed) console.warn('[KAPSO] Shutdown notification flush timed out; FPL state is unaffected.');
+  releaseRunnerLock?.();
+  releaseRunnerLock = null;
+  console.log('[MAIN] Shutdown complete.');
+}
+
+main().catch(async error => {
+  console.error('[MAIN] Fatal runner error:', error);
+  await flushKapsoWhatsAppUpdates();
+  releaseRunnerLock?.();
+  releaseRunnerLock = null;
+  process.exitCode = 1;
+});

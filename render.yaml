@@ -1,0 +1,102 @@
+services:
+  - type: worker
+    name: fpl-agent-shadow
+    runtime: node
+    repo: https://github.com/EmmanuelKeifala/fpl
+    branch: codex/fpl-autonomy
+    plan: starter
+    numInstances: 1
+    autoDeployTrigger: checksPass
+    buildCommand: npm ci && npm run build && npm test && python3 -m unittest scripts.ml.test_pipeline scripts.ml.test_live_features
+    startCommand: npm run start:render
+    disk:
+      name: fpl-agent-data
+      mountPath: /opt/render/project/src/data
+      sizeGB: 1
+    envVars:
+      - key: NODE_VERSION
+        value: 22.19.0
+      - key: FPL_RUN_MODE
+        value: shadow
+      - key: EMERGENCY_STOP
+        value: "true"
+      - key: AUTO_EXECUTE_TRANSFERS
+        value: "false"
+      - key: AUTO_SET_LINEUP
+        value: "false"
+      - key: AUTO_PLAY_CHIPS
+        value: "false"
+      - key: FPL_DB_PATH
+        value: /opt/render/project/src/data/fpl.db
+      - key: FPL_SESSION_FILE
+        value: /opt/render/project/src/data/fpl-session.json
+      - key: FPL_HEALTH_PATH
+        value: /opt/render/project/src/data/runner-health.json
+      - key: FPL_RUNNER_LOCK_PATH
+        value: /opt/render/project/src/data/fpl-runner.lock
+      - key: FPL_MUTATION_LOCK_PATH
+        value: /opt/render/project/src/data/fpl-mutation.lock
+      - key: FPL_DB_LOCK_PATH
+        value: /opt/render/project/src/data/fpl.db.lock
+      - key: FPL_EMERGENCY_STOP_FILE
+        value: /opt/render/project/src/data/EMERGENCY_STOP
+      - key: POLL_INTERVAL_MINUTES
+        value: "30"
+      - key: DEADLINE_NEWS_WINDOW_MINUTES
+        value: "90"
+      - key: DEADLINE_NEWS_POLL_MINUTES
+        value: "5"
+      - key: MAX_CONSECUTIVE_CYCLE_FAILURES
+        value: "3"
+      - key: FPL_ML_SHADOW_ENABLED
+        value: "true"
+      - key: FPL_ML_AUTO_FEATURES
+        value: "true"
+      - key: FPL_ML_FEATURE_DIRECTORY
+        value: /opt/render/project/src/data/live/player-fixture-features-v1
+      - key: FPL_ML_FEATURE_TIMEOUT_SECONDS
+        value: "600"
+      - key: FPL_LLM_ENABLED
+        value: "true"
+      - key: FPL_LLM_REQUIRED_FOR_LIVE
+        value: "true"
+      - key: FPL_LLM_MODEL
+        value: gpt-5.4-nano
+      - key: FPL_LLM_CACHE_DIR
+        value: /opt/render/project/src/data/llm-cache
+      - key: FPL_LLM_TIMEOUT_SECONDS
+        value: "30"
+      - key: FPL_LLM_MIN_CONFIDENCE
+        value: "0.75"
+      - key: KAPSO_WHATSAPP_ENABLED
+        value: "true"
+      - key: KAPSO_WHATSAPP_MODE
+        value: template
+      - key: KAPSO_WHATSAPP_LANGUAGE
+        value: en_US
+      - key: KAPSO_WHATSAPP_TEMPLATE_PARAMETER_NAME
+        value: update
+      - key: KAPSO_WHATSAPP_TIMEOUT_SECONDS
+        value: "8"
+      - key: KAPSO_WHATSAPP_MAX_ATTEMPTS
+        value: "3"
+      - key: FPL_EMAIL
+        sync: false
+      - key: FPL_PASSWORD
+        sync: false
+      - key: FPL_MANAGER_ID
+        sync: false
+      - key: FPL_EXPECTED_MANAGER_ID
+        sync: false
+      - key: OPENAI_API_KEY
+        sync: false
+      - key: KAPSO_API_KEY
+        sync: false
+      - key: KAPSO_PHONE_NUMBER_ID
+        sync: false
+      - key: KAPSO_WHATSAPP_TO
+        sync: false
+      - key: KAPSO_WHATSAPP_TEMPLATE_NAME
+        sync: false
+      - key: DISCORD_WEBHOOK_URL
+        sync: false

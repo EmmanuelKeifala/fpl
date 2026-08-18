@@ -3,6 +3,7 @@ import { z } from 'zod';
 import { tool } from '@openai/agents';
 import { getFPLClient } from '../api/client.js';
 import { getOptimizationEngine } from '../engine/optimizer.js';
+import { getFreeTransfers } from '../scheduler/decisions.js';
 
 export const getMyTeamTool = tool({
   name: 'get_my_team',
@@ -163,7 +164,7 @@ export const getMyTeamTool = tool({
         viceCaptain: startingXI.find(p => p.isViceCaptain)?.name || 'None',
         expectedPoints: Math.round(totalXP * 10) / 10,
         transfers: {
-          freeTransfers: myTeam.transfers.limit - myTeam.transfers.made,
+          freeTransfers: Number.isFinite(getFreeTransfers(myTeam)) ? getFreeTransfers(myTeam) : 'unlimited',
           madeThisGW: myTeam.transfers.made,
           costThisGW: myTeam.transfers.cost,
         },
