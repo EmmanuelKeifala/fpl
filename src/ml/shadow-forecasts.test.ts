@@ -1,11 +1,12 @@
 import { strict as assert } from 'node:assert';
-import { mkdtemp, writeFile } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
 import type { Fixture, Player } from '../api/types.js';
 import type { ExpectedPoints } from '../engine/optimizer.js';
 import type { LiveSeasonConfig } from '../strategy/season.js';
+import { fingerprintPlayerRoster, type LiveFeaturePlayer } from './live-features.js';
 
 const directory = await mkdtemp(join(tmpdir(), 'fpl-ml-shadow-'));
 process.env.FPL_DB_PATH = join(directory, 'shadow.db');
@@ -22,6 +23,11 @@ const FEATURE_NAMES = [
   'position_def',
   'position_mid',
   'position_fwd',
+];
+
+const BASE_PLAYERS: LiveFeaturePlayer[] = [
+  { id: 1, team: 1, element_type: 3 },
+  { id: 2, team: 2, element_type: 2 },
 ];
 
 function tree(value: number) {
@@ -66,11 +72,20 @@ function artifact() {
   };
 }
 
-function vector(home: boolean, position: 'DEF' | 'MID'): number[] {
-  return [Number(home), 1 / 37, 1, 1, 0, Number(position === 'DEF'), Number(position === 'MID'), 0];
+function vector(home: boolean, position: 'GK' | 'DEF' | 'MID' | 'FWD'): number[] {
+  return [
+    Number(home),
+    1 / 37,
+    1,
+    1,
+    Number(position === 'GK'),
+    Number(position === 'DEF'),
+    Number(position === 'MID'),
+    Number(position === 'FWD'),
+  ];
 }
 
-function sidecar() {
+function sidecar(players: readonly LiveFeaturePlayer[] = BASE_PLAYERS) {
   return {
     artifact_type: 'player-fixture-live-features',
     model_version: 'player-fixture-v1',
@@ -91,15 +106,24 @@ function sidecar() {
       { id: 20, event: 2, kickoff_time: '2025-08-16T14:00:00Z', team_h: 1, team_a: 2 },
     ],
     fixture_schedule_sha256: 'a'.repeat(64),
+    player_roster_sha256: fingerprintPlayerRoster(players),
     source_hashes: {
       bootstrap_static: 'b'.repeat(64),
       fixtures: 'c'.repeat(64),
       element_summaries: 'd'.repeat(64),
     },
-    rows: [
-      { fixture_id: 20, player_id: 1, team_id: 1, opponent_id: 2, position: 'MID', kickoff_time: '2025-08-16T14:00:00Z', features: vector(true, 'MID') },
-      { fixture_id: 20, player_id: 2, team_id: 2, opponent_id: 1, position: 'DEF', kickoff_time: '2025-08-16T14:00:00Z', features: vector(false, 'DEF') },
-    ],
+    rows: players.map(player => {
+      const position = ({ 1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD' } as const)[player.element_type as 1 | 2 | 3 | 4];
+      return {
+        fixture_id: 20,
+        player_id: player.id,
+        team_id: player.team,
+        opponent_id: player.team === 1 ? 2 : 1,
+        position,
+        kickoff_time: '2025-08-16T14:00:00Z',
+        features: vector(player.team === 1, position),
+      };
+    }),
   };
 }
 
@@ -134,6 +158,8 @@ function heuristic(playerId: number): ExpectedPoints {
     nextGW: 4,
     next5GW: 4,
     confidence: 0.7,
+    availability: { appearanceProbability: 0.9, startProbability: 0.8, zeroMinuteProbability: 0.1 },
+    distribution: { p10: 0, p50: 4, p90: 7, haulProbability: 0.15 },
     breakdown: {
       formFactor: 1,
       fixtureFactor: 1,
@@ -156,12 +182,10 @@ test('ML shadow observer loads files, predicts, and persists without an executio
   await writeFile(sidecarPath, JSON.stringify(sidecar()));
   process.env.FPL_ML_SHADOW_ENABLED = 'true';
   process.env.FPL_ML_MODEL_PATH = modelPath;
+  process.env.FPL_ML_AUTO_FEATURES = 'false';
   process.env.FPL_ML_FEATURE_SIDECAR = sidecarPath;
 
-  const players = [
-    { id: 1, team: 1, element_type: 3 },
-    { id: 2, team: 2, element_type: 2 },
-  ] as Player[];
+  const players = BASE_PLAYERS as Player[];
   const engine = {
     getAllPlayers: () => players,
     getAllFixtures: () => [fixture()],
@@ -184,4 +208,77 @@ test('ML shadow observer loads files, predicts, and persists without an executio
   assert.equal(run?.status, 'completed');
   assert.equal(run?.playerCount, 2);
   assert.equal('execute' in result, false);
+});
+
+test('ML shadow auto mode regenerates a cached sidecar when player 588 is missing', async () => {
+  const modelPath = join(directory, 'auto-model.json');
+  const featureDirectory = join(directory, 'auto-features');
+  const gameweekDirectory = join(featureDirectory, '2025-2026', 'gw-02');
+  const cachedPath = join(gameweekDirectory, 'features.json');
+  const generatorPath = join(directory, 'feature-generator.mjs');
+  const players = [
+    ...BASE_PLAYERS,
+    { id: 588, team: 1, element_type: 3 },
+  ] as Player[];
+  const freshSidecar = sidecar(players);
+
+  await mkdir(gameweekDirectory, { recursive: true });
+  await writeFile(modelPath, JSON.stringify(artifact()));
+  await writeFile(cachedPath, JSON.stringify(sidecar()));
+  await writeFile(generatorPath, [
+    "import { writeFile } from 'node:fs/promises';",
+    "const outputIndex = process.argv.indexOf('--output');",
+    "if (outputIndex < 0 || !process.argv[outputIndex + 1]) throw new Error('missing --output');",
+    `await writeFile(process.argv[outputIndex + 1], ${JSON.stringify(JSON.stringify(freshSidecar))});`,
+  ].join('\n'));
+
+  const previous = new Map<string, string | undefined>();
+  const env = {
+    FPL_ML_SHADOW_ENABLED: 'true',
+    FPL_ML_MODEL_PATH: modelPath,
+    FPL_ML_AUTO_FEATURES: 'true',
+    FPL_ML_FEATURE_SIDECAR: undefined,
+    FPL_ML_FEATURE_DIRECTORY: featureDirectory,
+    FPL_ML_PYTHON_BIN: process.execPath,
+    FPL_ML_FEATURE_SCRIPT: generatorPath,
+    FPL_ML_FEATURE_TIMEOUT_SECONDS: '60',
+  } satisfies Record<string, string | undefined>;
+  for (const [name, value] of Object.entries(env)) {
+    previous.set(name, process.env[name]);
+    if (value === undefined) delete process.env[name];
+    else process.env[name] = value;
+  }
+
+  try {
+    const engine = {
+      getAllPlayers: () => players,
+      getAllFixtures: () => [fixture()],
+      getSeasonConfig: () => ({ season: '2025-2026' }) as LiveSeasonConfig,
+      getNextDeadline: () => ({
+        gameweek: 2,
+        deadline: new Date('2099-08-15T17:30:00Z'),
+        hoursRemaining: 5.5,
+      }),
+    };
+    const result = await captureMlShadowForecasts({
+      gameweek: 2,
+      capturedAt: new Date('2025-08-15T12:05:00Z'),
+      heuristicForecasts: players.map(player => heuristic(player.id)),
+      engine,
+    });
+
+    assert.equal(result.status, 'completed');
+    assert.equal(result.status === 'completed' ? result.players : 0, 3);
+    const regenerated = JSON.parse(await readFile(cachedPath, 'utf8')) as ReturnType<typeof sidecar>;
+    assert.equal(regenerated.player_roster_sha256, fingerprintPlayerRoster(players));
+    assert.ok(regenerated.rows.some(row => row.player_id === 588));
+    const [run] = await getMlShadowForecastRuns('2025-2026', 2);
+    assert.equal(run?.status, 'completed');
+    assert.equal(run?.playerCount, 3);
+  } finally {
+    for (const [name, value] of previous) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+  }
 });

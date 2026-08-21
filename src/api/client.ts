@@ -490,8 +490,8 @@ class FPLClient {
     if (!Number.isInteger(guard.gameweek) || guard.gameweek < 1 || guard.gameweek > 38) {
       throw new Error(`Invalid mutation gameweek ${guard.gameweek}`);
     }
-    if (!Number.isFinite(guard.safetyMarginMs) || guard.safetyMarginMs < 5 * 60_000) {
-      throw new Error('Mutation safety margin must be at least five minutes');
+    if (!Number.isFinite(guard.safetyMarginMs) || guard.safetyMarginMs < 2 * 60_000) {
+      throw new Error('Mutation safety margin must be at least two minutes');
     }
 
     this.clearCache();
@@ -557,7 +557,9 @@ class FPLClient {
   ): Promise<MutationResult> {
     try {
       const after = await this.getMyTeam();
-      if (teamPostcondition(after, selection, chip)) {
+      const activeChipPreserved = chip !== null
+        || activeChipFingerprint(after) === activeChipFingerprint(before);
+      if (teamPostcondition(after, selection, chip) && activeChipPreserved) {
         return { success: true, outcome: 'confirmed', message: successMessage };
       }
       if (fingerprintMyTeam(after) === fingerprintMyTeam(before)) {
@@ -803,7 +805,29 @@ function transferPostcondition(before: MyTeam, after: MyTeam, transfers: Transfe
     expected.add(transfer.playerIn);
   }
   const actual = new Set(after.picks.map(pick => pick.element));
-  return expected.size === actual.size && [...expected].every(playerId => actual.has(playerId));
+  const squadMatches = expected.size === actual.size
+    && [...expected].every(playerId => actual.has(playerId));
+  const expectedBank = before.transfers.bank + transfers.reduce(
+    (bank, transfer) => bank + transfer.sellingPrice - transfer.purchasePrice,
+    0
+  );
+  const expectedMade = before.transfers.made + transfers.length;
+  const expectedCost = before.transfers.status === 'unlimited'
+    ? 0
+    : Math.max(0, expectedMade - (before.transfers.limit ?? 0)) * 4;
+  return squadMatches
+    && after.transfers.bank === expectedBank
+    && after.transfers.made === expectedMade
+    && after.transfers.cost === expectedCost
+    && activeChipFingerprint(after) === activeChipFingerprint(before);
+}
+
+function activeChipFingerprint(team: MyTeam): string {
+  return team.chips
+    .filter(candidate => candidate.status_for_entry === 'active' || candidate.is_pending === true)
+    .map(candidate => `${candidate.name}:${candidate.number}`)
+    .sort()
+    .join(',');
 }
 
 function teamPostcondition(team: MyTeam, selection: TeamSelection[], chip: 'bboost' | '3xc' | null): boolean {
@@ -824,6 +848,10 @@ function teamPostcondition(team: MyTeam, selection: TeamSelection[], chip: 'bboo
 
 function validateChipTransition(team: MyTeam, chip: 'bboost' | '3xc' | null, gameweek: number): void {
   const active = team.chips.find(candidate => candidate.status_for_entry === 'active' || candidate.is_pending === true);
+  // Wildcard and Free Hit are transfer chips. They are already irreversible
+  // once active and are not valid values for the lineup endpoint; a null team
+  // update preserves them rather than trying to reactivate or cancel them.
+  if (active && (active.name === 'wildcard' || active.name === 'freehit') && chip === null) return;
   if (active && chip !== active.name) {
     throw new Error(`Active chip ${active.name} must be preserved by the team update`);
   }

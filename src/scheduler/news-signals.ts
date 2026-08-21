@@ -11,7 +11,13 @@ export interface PlayerNewsSignal {
   source: string;
   sourceTier: 1 | 2 | 3 | 4;
   confidence: number;
+  /** Availability for the target gameweek. This is applied once, separately
+   * from minutes conditional on appearing. */
+  availabilityProbability: number | null;
   minutesMultiplier: number;
+  expectedMinutesFloor: number | null;
+  confirmedLineup: boolean;
+  conflicted: boolean;
   publishedAt: Date | null;
   retrievedAt: Date;
   expiresAt: Date;
@@ -28,18 +34,19 @@ export function buildOfficialNewsSignals(players: Player[], gameweek: number, de
     const chance = player.chance_of_playing_next_round;
     let type: PlayerNewsSignalType | undefined;
     let multiplier = 1;
+    let availabilityProbability: number | null = null;
     if (player.status === 's') {
       type = 'suspended';
-      multiplier = 0;
+      availabilityProbability = 0;
     } else if (player.status === 'i' || player.status === 'u') {
       type = 'ruled-out';
-      multiplier = 0;
+      availabilityProbability = 0;
     } else if (player.status === 'd' || (chance !== null && chance < 100)) {
       type = 'doubtful';
-      multiplier = Math.max(0.1, (chance ?? 50) / 100);
+      availabilityProbability = Math.max(0, Math.min(1, (chance ?? 50) / 100));
     } else if (player.news && /return|available|fit/i.test(player.news)) {
       type = 'returning';
-      multiplier = 1;
+      availabilityProbability = 1;
     }
     if (!type) return [];
     return [{
@@ -50,7 +57,11 @@ export function buildOfficialNewsSignals(players: Player[], gameweek: number, de
       source: 'Official FPL',
       sourceTier: 1 as const,
       confidence: 0.98,
+      availabilityProbability,
       minutesMultiplier: multiplier,
+      expectedMinutesFloor: null,
+      confirmedLineup: false,
+      conflicted: false,
       publishedAt: player.news_added ? new Date(player.news_added) : null,
       retrievedAt: now,
       expiresAt: deadline,
@@ -76,6 +87,9 @@ export function buildExternalNewsSignals(input: {
     if (!player || !type) continue;
     const sourceTier = sourceTierFor(item.source);
     const confidence = baseConfidence(sourceTier, item.timestampVerified, item.timestamp, retrievedAt);
+    const confirmedLineup = item.timestampVerified
+      && sourceTier <= 2
+      && (type === 'expected-start' || type === 'expected-bench');
     signals.push({
       gameweek: input.gameweek,
       playerId: player.id,
@@ -84,7 +98,11 @@ export function buildExternalNewsSignals(input: {
       source: item.source,
       sourceTier,
       confidence,
+      availabilityProbability: signalAvailability(type),
       minutesMultiplier: signalMultiplier(type, sourceTier, confidence),
+      expectedMinutesFloor: confirmedLineup && type === 'expected-start' ? 60 : null,
+      confirmedLineup,
+      conflicted: false,
       publishedAt: item.timestampVerified ? item.timestamp : null,
       retrievedAt,
       expiresAt: input.deadline,
@@ -99,6 +117,38 @@ export function mergePlayerNewsSignals(signals: PlayerNewsSignal[]): PlayerNewsS
   const byPlayer = new Map<number, PlayerNewsSignal[]>();
   for (const signal of signals) byPlayer.set(signal.playerId, [...(byPlayer.get(signal.playerId) ?? []), signal]);
   return [...byPlayer.values()].map(playerSignals => {
+    const hardOfficial = playerSignals.find(signal =>
+      signal.sourceTier === 1 && (signal.type === 'ruled-out' || signal.type === 'suspended')
+    );
+    if (hardOfficial) return hardOfficial;
+
+    const freshLineupSignals = playerSignals
+      .filter(signal => signal.confirmedLineup && isFreshLineupSignal(signal))
+      .sort((left, right) =>
+        right.confidence - left.confidence
+        || (right.publishedAt?.getTime() ?? 0) - (left.publishedAt?.getTime() ?? 0)
+      );
+    if (freshLineupSignals.length > 0) {
+      const best = freshLineupSignals[0]!;
+      const contradiction = freshLineupSignals.find(signal =>
+        signal.type !== best.type && Math.abs(signal.confidence - best.confidence) < 0.15
+      );
+      if (contradiction) {
+        return {
+          ...best,
+          type: 'doubtful',
+          confidence: Math.min(best.confidence, contradiction.confidence, 0.6),
+          availabilityProbability: 0.6,
+          minutesMultiplier: 0.65,
+          expectedMinutesFloor: null,
+          confirmedLineup: false,
+          conflicted: true,
+          evidence: `Conflicting lineup reports: ${best.evidence} | ${contradiction.evidence}`,
+        };
+      }
+      return best;
+    }
+
     const ordered = [...playerSignals].sort((a, b) =>
       a.sourceTier - b.sourceTier || b.confidence - a.confidence || b.retrievedAt.getTime() - a.retrievedAt.getTime()
     );
@@ -109,6 +159,12 @@ export function mergePlayerNewsSignals(signals: PlayerNewsSignal[]): PlayerNewsS
     }
     return corroboration > 0 ? { ...best, confidence: Math.min(0.99, best.confidence + 0.08) } : best;
   });
+}
+
+function isFreshLineupSignal(signal: PlayerNewsSignal): boolean {
+  if (!signal.timestampVerified || !signal.publishedAt) return false;
+  const ageAtDeadline = signal.expiresAt.getTime() - signal.publishedAt.getTime();
+  return ageAtDeadline >= 0 && ageAtDeadline <= 6 * 60 * 60_000;
 }
 
 function resolvePlayer(text: string, players: Player[]): Player | undefined {
@@ -130,7 +186,9 @@ function classifySignal(text: string): PlayerNewsSignalType | undefined {
   if (/suspend|ban(?:ned)?/.test(value)) return 'suspended';
   if (/ruled out|will miss|not available|absent|injured|injury setback/.test(value)) return 'ruled-out';
   if (/benched|on the bench|not start|dropped/.test(value)) return 'expected-bench';
-  if (/expected to start|starts|in the lineup|set to start/.test(value)) return 'expected-start';
+  if (/expected to start|\bstarts\b|\bstarting\b|starting xi|named in (?:the )?(?:xi|line-?up)|in the line-?up|set to start/.test(value)) {
+    return 'expected-start';
+  }
   if (/doubt|fitness test|late call|50.?50/.test(value)) return 'doubtful';
   if (/return|available|passed fit|back in training|fit to play/.test(value)) return 'returning';
   return undefined;
@@ -151,12 +209,17 @@ function baseConfidence(tier: number, verified: boolean, publishedAt: Date, now:
 }
 
 function signalMultiplier(type: PlayerNewsSignalType, tier: number, confidence: number): number {
-  const target = type === 'ruled-out' || type === 'suspended' ? 0
-    : type === 'expected-bench' ? 0.35
-      : type === 'doubtful' ? 0.6
-        : 1;
+  const target = type === 'expected-bench' ? 0.35 : 1;
   const effectiveConfidence = tier <= 2 ? confidence : Math.min(confidence, 0.65);
   return Math.round((1 - (1 - target) * effectiveConfidence) * 100) / 100;
+}
+
+function signalAvailability(type: PlayerNewsSignalType): number | null {
+  if (type === 'ruled-out' || type === 'suspended') return 0;
+  if (type === 'expected-start' || type === 'returning') return 1;
+  if (type === 'expected-bench') return 0.8;
+  if (type === 'doubtful') return 0.6;
+  return null;
 }
 
 function normalize(value: string): string {

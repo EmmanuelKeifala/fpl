@@ -30,6 +30,11 @@ export async function reviewGameweekPlanWithLlm(input: {
       hitCost: input.transferPlan.hitCost,
       details: {
         transfers: transferNames,
+        planMode: input.transferPlan.mode,
+        rankMode: input.context.rankPolicy.mode,
+        templateProtectionGain: input.transferPlan.templateProtectionGain,
+        rankUtilityGain: input.transferPlan.rankUtilityGain,
+        objectiveGain: input.transferPlan.objectiveGain,
         captain: input.captain.name,
         captainId: input.captain.id,
         chips: input.chips.map(chip => `${chip.chip}:${chip.expectedGain.toFixed(1)}:${chip.confidence.toFixed(2)}`),
@@ -58,6 +63,11 @@ export async function reviewTransferPlanWithLlm(
       hitCost: transferPlan.hitCost,
       details: {
         horizon: transferPlan.horizon,
+        planMode: transferPlan.mode,
+        rankMode: context.rankPolicy.mode,
+        templateProtectionGain: transferPlan.templateProtectionGain,
+        rankUtilityGain: transferPlan.rankUtilityGain,
+        objectiveGain: transferPlan.objectiveGain,
         transfers: transferNames,
         priceRisks: transferPlan.transfers.map(transfer => transfer.priceRisk),
       },
@@ -110,6 +120,7 @@ function proposal(
 ): LlmDecisionProposal {
   if (!context.deadline) throw new Error('Cannot request an LLM decision review without a deadline');
   const limits = getSafetyLimits();
+  const unlimitedTransfers = context.myTeam?.transfers.status === 'unlimited';
   const trustedNews = context.newsSignals
     .filter(signal => signal.sourceTier <= 2 && (signal.timestampVerified || signal.sourceTier === 1))
     .slice(0, 20)
@@ -132,9 +143,19 @@ function proposal(
     teamAlerts: context.teamHealth.alerts,
     trustedNews,
     safetyConstraints: {
-      maximumTransfers: limits.maxTransfersPerWeek,
+      maximumTransfers: unlimitedTransfers ? limits.maxUnlimitedTransfers : limits.maxTransfersPerWeek,
       maximumHitCost: limits.maxTransferHitCost,
-      minimumHitGain: limits.minXPGainForHit,
+      minimumHitGain: option.hitCost > 0 ? limits.minXPGainForHit : 0,
+      unlimitedTransfers,
+      rankMode: context.rankPolicy.mode,
+      rankRiskBudget: context.rankPolicy.risk.riskBudget,
+      minimumQualityRatio: context.rankPolicy.risk.minimumQualityRatio,
+      maximumLowOwnershipStarters: context.rankPolicy.risk.maxLowOwnershipStarters,
+      minimumTemplateCorePlayers: unlimitedTransfers && context.rankPolicy.mode === 'protect'
+        ? limits.minimumTemplateCorePlayers
+        : 0,
+      templateCoreOwnershipThreshold: limits.templateCoreOwnershipThreshold,
+      templateAnchorOwnershipThreshold: limits.templateAnchorOwnershipThreshold,
       minimumTransferConfidence: limits.minTransferConfidence,
       minimumLineupGain: limits.minLineupGain,
       minimumLineupConfidence: limits.minLineupConfidence,

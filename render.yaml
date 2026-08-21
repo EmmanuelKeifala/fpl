@@ -45,9 +45,29 @@ services:
       - key: DEADLINE_NEWS_WINDOW_MINUTES
         value: "90"
       - key: DEADLINE_NEWS_POLL_MINUTES
+        value: "1"
+      - key: FINALIZATION_WINDOW_MINUTES
         value: "5"
+      - key: DEADLINE_SAFETY_MINUTES
+        value: "3"
+      - key: INTELLIGENCE_MAX_AGE_MINUTES
+        value: "2"
+      - key: MIN_EARLY_PRICE_CONFIDENCE
+        value: "0.80"
+      - key: MIN_EARLY_PRICE_VALUE_LOSS_TENTHS
+        value: "1"
       - key: MAX_CONSECUTIVE_CYCLE_FAILURES
         value: "3"
+      - key: MAX_UNLIMITED_TRANSFERS
+        value: "15"
+      - key: PROTECT_TEMPLATE_WEIGHT
+        value: "0.20"
+      - key: TEMPLATE_CORE_OWNERSHIP_THRESHOLD
+        value: "25"
+      - key: MIN_TEMPLATE_CORE_PLAYERS
+        value: "6"
+      - key: TEMPLATE_ANCHOR_OWNERSHIP_THRESHOLD
+        value: "60"
       - key: FPL_ML_SHADOW_ENABLED
         value: "true"
       - key: FPL_ML_AUTO_FEATURES
@@ -88,6 +108,8 @@ services:
         sync: false
       - key: FPL_EXPECTED_MANAGER_ID
         sync: false
+      - key: FPL_TARGET_RANK
+        value: "100000"
       - key: OPENAI_API_KEY
         sync: false
       - key: KAPSO_API_KEY

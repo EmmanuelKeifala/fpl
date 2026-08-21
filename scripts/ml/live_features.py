@@ -101,6 +101,32 @@ def _canonical_payload_hash(value: Any) -> str:
     return hashlib.sha256(encoded).hexdigest()
 
 
+def _canonical_player_roster(elements: Sequence[Any]) -> list[list[int]]:
+    roster: list[list[int]] = []
+    seen: set[int] = set()
+    for value in elements:
+        player = _mapping(value, "player")
+        player_id = _integer(player.get("id"), "player.id")
+        team_id = _integer(player.get("team"), f"player {player_id} team")
+        element_type = _integer(
+            player.get("element_type"), f"player {player_id} element_type"
+        )
+        if player_id <= 0 or player_id in seen:
+            raise PipelineError(
+                f"current player roster has invalid or duplicate player {player_id}"
+            )
+        if team_id <= 0 or element_type not in POSITION_BY_ELEMENT_TYPE:
+            raise PipelineError(
+                f"current player {player_id} has invalid club or position metadata"
+            )
+        seen.add(player_id)
+        roster.append([player_id, team_id, element_type])
+    if not roster:
+        raise PipelineError("current player roster is empty")
+    roster.sort(key=lambda player: player[0])
+    return roster
+
+
 def derive_season(events: Sequence[Any]) -> str:
     deadlines = [
         _timestamp(_mapping(event, "event").get("deadline_time"), "deadline_time")
@@ -301,11 +327,15 @@ def generate_live_feature_sidecar(
             _integer(fixture.get("team_a"), "fixture.team_a"),
         )
     }
-    players = [
+    all_players = [
         _mapping(value, "player")
         for value in _sequence(bootstrap.get("elements"), "elements")
-        if _integer(_mapping(value, "player").get("team"), "player.team") in target_team_ids
-        and _integer(_mapping(value, "player").get("element_type"), "player.element_type") in POSITION_BY_ELEMENT_TYPE
+    ]
+    player_roster = _canonical_player_roster(all_players)
+    players = [
+        player
+        for player in all_players
+        if _integer(player.get("team"), "player.team") in target_team_ids
     ]
     summaries = {player_id: _mapping(value, f"element summary {player_id}") for player_id, value in element_summaries.items()}
     fixtures_by_id = {
@@ -424,6 +454,7 @@ def generate_live_feature_sidecar(
         "latest_included_gameweek": latest_included,
         "target_fixtures": schedule,
         "fixture_schedule_sha256": _canonical_payload_hash(schedule),
+        "player_roster_sha256": _canonical_payload_hash(player_roster),
         "source_hashes": hashes,
         "rows": rows,
     }

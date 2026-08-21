@@ -2,8 +2,10 @@ import { strict as assert } from 'node:assert';
 import test from 'node:test';
 import type { Fixture } from '../api/types.js';
 import {
+  fingerprintPlayerRoster,
   predictLiveFeatureSidecar,
   validateLiveFeatureSidecar,
+  type LiveFeaturePlayer,
   type LiveFeaturePredictor,
   type LiveFeatureRow,
   type LiveFeatureSidecar,
@@ -18,6 +20,10 @@ const FEATURE_NAMES = [
   'position_def',
   'position_mid',
   'position_fwd',
+];
+
+const CURRENT_PLAYERS: LiveFeaturePlayer[] = [
+  { id: 1, team: 1, element_type: 3 },
 ];
 
 const predictor: LiveFeaturePredictor = {
@@ -72,6 +78,7 @@ function sidecar(): LiveFeatureSidecar {
       { id: 21, event: 2, kickoff_time: '2025-08-18T19:00:00Z', team_h: 3, team_a: 1 },
     ],
     fixture_schedule_sha256: 'a'.repeat(64),
+    player_roster_sha256: fingerprintPlayerRoster(CURRENT_PLAYERS),
     source_hashes: {
       bootstrap_static: 'b'.repeat(64),
       fixtures: 'c'.repeat(64),
@@ -116,7 +123,28 @@ test('live sidecar validates schedule, feature ordering, frozen boundary, and DG
     season: '2025-2026',
     gameweek: 2,
     fixtures: fixtures(),
+    players: CURRENT_PLAYERS,
   }));
+});
+
+test('player roster fingerprint is order-independent and matches the Python canonical contract', () => {
+  const players: LiveFeaturePlayer[] = [
+    { id: 3, team: 1, element_type: 4 },
+    { id: 1, team: 1, element_type: 3 },
+    { id: 2, team: 2, element_type: 2 },
+  ];
+  assert.equal(
+    fingerprintPlayerRoster(players),
+    'f19e17d35c8c69334ad7600975b995ac3af36a3d20a4bfb72867f2a0e8c413bb'
+  );
+  assert.notEqual(
+    fingerprintPlayerRoster(players),
+    fingerprintPlayerRoster(players.map(player => player.id === 3 ? { ...player, team: 2 } : player))
+  );
+  assert.throws(
+    () => fingerprintPlayerRoster([...players, players[0]!]),
+    /invalid or duplicate player 3/
+  );
 });
 
 test('live sidecar predictions aggregate fixture points, minutes, and appearance probabilities', () => {
@@ -143,9 +171,67 @@ test('live sidecar rejects post-deadline, schedule-drifted, and incomplete artif
     season: '2025-2026',
     gameweek: 2,
     fixtures: driftedFixtures,
+    players: CURRENT_PLAYERS,
   }), /schedule differs/);
 
   const incomplete = sidecar();
   incomplete.rows.pop();
   assert.throws(() => validateLiveFeatureSidecar(incomplete, predictor), /does not cover every club fixture/);
+});
+
+test('live sidecar rejects roster fingerprint, missing, extra, club, and position drift', () => {
+  const expandedPlayers: LiveFeaturePlayer[] = [
+    ...CURRENT_PLAYERS,
+    { id: 2, team: 2, element_type: 2 },
+  ];
+  assert.throws(() => validateLiveFeatureSidecar(sidecar(), predictor, {
+    season: '2025-2026',
+    gameweek: 2,
+    fixtures: fixtures(),
+    players: expandedPlayers,
+  }), /roster fingerprint differs/);
+
+  const missing = sidecar();
+  missing.player_roster_sha256 = fingerprintPlayerRoster(expandedPlayers);
+  assert.throws(() => validateLiveFeatureSidecar(missing, predictor, {
+    season: '2025-2026',
+    gameweek: 2,
+    fixtures: fixtures(),
+    players: expandedPlayers,
+  }), /current-player coverage for player 2 is 0; expected 1/);
+
+  const extra = sidecar();
+  extra.rows.push({
+    fixture_id: 20,
+    player_id: 2,
+    team_id: 2,
+    opponent_id: 1,
+    position: 'DEF',
+    kickoff_time: '2025-08-16T14:00:00Z',
+    features: vector(false, 'DEF', 1),
+  });
+  assert.throws(() => validateLiveFeatureSidecar(extra, predictor, {
+    season: '2025-2026',
+    gameweek: 2,
+    fixtures: fixtures(),
+    players: CURRENT_PLAYERS,
+  }), /contains stale player 2/);
+
+  const staleClub = sidecar();
+  staleClub.rows[0]!.team_id = 2;
+  assert.throws(() => validateLiveFeatureSidecar(staleClub, predictor, {
+    season: '2025-2026',
+    gameweek: 2,
+    fixtures: fixtures(),
+    players: CURRENT_PLAYERS,
+  }), /stale club or position metadata/);
+
+  const stalePosition = sidecar();
+  stalePosition.rows[0]!.position = 'DEF';
+  assert.throws(() => validateLiveFeatureSidecar(stalePosition, predictor, {
+    season: '2025-2026',
+    gameweek: 2,
+    fixtures: fixtures(),
+    players: CURRENT_PLAYERS,
+  }), /stale club or position metadata/);
 });

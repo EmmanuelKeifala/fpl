@@ -57,6 +57,7 @@ export async function captureMlShadowForecasts(input: MlShadowCaptureInput): Pro
         season,
         gameweek: input.gameweek,
         fixtures: input.engine.getAllFixtures(),
+        players: input.engine.getAllPlayers(),
       })
       : {
         path: config.featureSidecarPath!,
@@ -69,6 +70,7 @@ export async function captureMlShadowForecasts(input: MlShadowCaptureInput): Pro
       season,
       gameweek: input.gameweek,
       fixtures: input.engine.getAllFixtures(),
+      players: input.engine.getAllPlayers(),
     });
     if (Date.parse(sidecar.deadline_utc) !== deadline.deadline.getTime()) {
       throw new Error('Live ML sidecar deadline differs from the optimizer deadline');

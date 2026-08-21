@@ -1,5 +1,6 @@
+import { createHash } from 'node:crypto';
 import { readFile, stat } from 'node:fs/promises';
-import type { Fixture } from '../api/types.js';
+import type { Fixture, Player } from '../api/types.js';
 import type { PlayerFixturePrediction } from './predictor.js';
 
 export interface LiveFeatureTargetFixture {
@@ -38,6 +39,7 @@ export interface LiveFeatureSidecar {
   latest_included_gameweek: number;
   target_fixtures: LiveFeatureTargetFixture[];
   fixture_schedule_sha256: string;
+  player_roster_sha256: string;
   source_hashes: Record<string, string>;
   rows: LiveFeatureRow[];
 }
@@ -48,6 +50,15 @@ export interface LiveFeaturePredictor {
   readonly featureNames: readonly string[];
   predictVector(features: readonly number[]): PlayerFixturePrediction;
 }
+
+export interface LiveFeatureExpectation {
+  season: string;
+  gameweek: number;
+  fixtures: readonly Fixture[];
+  players: readonly LiveFeaturePlayer[];
+}
+
+export type LiveFeaturePlayer = Pick<Player, 'id' | 'team' | 'element_type'>;
 
 export interface LiveFixturePrediction extends PlayerFixturePrediction {
   fixtureId: number;
@@ -71,7 +82,7 @@ const REQUIRED_SOURCE_HASHES = ['bootstrap_static', 'fixtures', 'element_summari
 export async function loadLiveFeatureSidecar(
   path: string,
   predictor: LiveFeaturePredictor,
-  expected?: { season: string; gameweek: number; fixtures: readonly Fixture[] }
+  expected: LiveFeatureExpectation
 ): Promise<LiveFeatureSidecar> {
   const size = (await stat(path)).size;
   if (size > 64 * 1024 * 1024) throw new Error(`Live ML feature sidecar is too large: ${size} bytes`);
@@ -83,7 +94,7 @@ export async function loadLiveFeatureSidecar(
 export function validateLiveFeatureSidecar(
   sidecar: LiveFeatureSidecar,
   predictor: LiveFeaturePredictor,
-  expected?: { season: string; gameweek: number; fixtures: readonly Fixture[] }
+  expected?: LiveFeatureExpectation
 ): void {
   if (sidecar.artifact_type !== 'player-fixture-live-features') {
     throw new Error(`Unsupported live ML artifact type ${sidecar.artifact_type}`);
@@ -121,6 +132,9 @@ export function validateLiveFeatureSidecar(
   if (!/^[a-f0-9]{64}$/.test(sidecar.fixture_schedule_sha256)) {
     throw new Error('Live ML fixture schedule hash is invalid');
   }
+  if (!/^[a-f0-9]{64}$/.test(sidecar.player_roster_sha256)) {
+    throw new Error('Live ML player roster hash is invalid');
+  }
   for (const name of REQUIRED_SOURCE_HASHES) {
     if (!/^[a-f0-9]{64}$/.test(sidecar.source_hashes[name] ?? '')) {
       throw new Error(`Live ML source hash ${name} is invalid`);
@@ -135,10 +149,68 @@ export function validateLiveFeatureSidecar(
     if (!sameFixtures(sidecar.target_fixtures, current)) {
       throw new Error('Live ML target fixture schedule differs from current public fixtures');
     }
+    const currentRosterHash = fingerprintPlayerRoster(expected.players);
+    if (sidecar.player_roster_sha256 !== currentRosterHash) {
+      throw new Error('Live ML player roster fingerprint differs from the current public roster');
+    }
+    validateCurrentPlayerCoverage(sidecar, expected.players);
   }
 
   validateTargetFixtures(sidecar);
   validateRows(sidecar, predictor.featureNames);
+}
+
+function validateCurrentPlayerCoverage(
+  sidecar: LiveFeatureSidecar,
+  players: readonly LiveFeaturePlayer[]
+): void {
+  const expectedPlayers = new Map(players.map(player => [player.id, player]));
+  const fixturesByTeam = new Map<number, number[]>();
+  for (const fixture of sidecar.target_fixtures) {
+    fixturesByTeam.set(fixture.team_h, [...(fixturesByTeam.get(fixture.team_h) ?? []), fixture.id]);
+    fixturesByTeam.set(fixture.team_a, [...(fixturesByTeam.get(fixture.team_a) ?? []), fixture.id]);
+  }
+  const rowsByPlayer = new Map<number, LiveFeatureRow[]>();
+  for (const row of sidecar.rows) {
+    if (!expectedPlayers.has(row.player_id)) {
+      throw new Error(`Live ML sidecar contains stale player ${row.player_id}`);
+    }
+    rowsByPlayer.set(row.player_id, [...(rowsByPlayer.get(row.player_id) ?? []), row]);
+  }
+
+  const position = ({ 1: 'GK', 2: 'DEF', 3: 'MID', 4: 'FWD' } as const);
+  for (const player of players) {
+    const expectedFixtureIds = [...(fixturesByTeam.get(player.team) ?? [])].sort((left, right) => left - right);
+    const rows = rowsByPlayer.get(player.id) ?? [];
+    const expectedPosition = position[player.element_type as keyof typeof position];
+    if (!expectedPosition || rows.some(row => row.team_id !== player.team || row.position !== expectedPosition)) {
+      throw new Error(`Live ML current player ${player.id} has stale club or position metadata`);
+    }
+    const actualFixtureIds = rows.map(row => row.fixture_id).sort((left, right) => left - right);
+    if (!sameArray(actualFixtureIds, expectedFixtureIds)) {
+      throw new Error(
+        `Live ML current-player coverage for player ${player.id} is ${actualFixtureIds.length}; expected ${expectedFixtureIds.length}`
+      );
+    }
+  }
+}
+
+export function fingerprintPlayerRoster(players: readonly LiveFeaturePlayer[]): string {
+  if (players.length === 0) throw new Error('Current ML player roster is empty');
+  const seen = new Set<number>();
+  const roster = players
+    .map(player => {
+      if (!positiveInteger(player.id) || seen.has(player.id)) {
+        throw new Error(`Current ML player roster has invalid or duplicate player ${player.id}`);
+      }
+      if (!positiveInteger(player.team) || ![1, 2, 3, 4].includes(player.element_type)) {
+        throw new Error(`Current ML player ${player.id} has invalid club or position metadata`);
+      }
+      seen.add(player.id);
+      return [player.id, player.team, player.element_type] as const;
+    })
+    .sort((left, right) => left[0] - right[0]);
+  return createHash('sha256').update(JSON.stringify(roster)).digest('hex');
 }
 
 export function predictLiveFeatureSidecar(

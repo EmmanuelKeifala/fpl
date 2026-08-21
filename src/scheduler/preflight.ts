@@ -10,9 +10,12 @@ import { getLlmDecisionConfig } from '../llm/config.js';
 import { getKapsoWhatsAppConfig } from '../notifications/kapso-config.js';
 import {
   calculateCurrentLineupExpectedPoints,
+  getConfiguredTargetRank,
   optimizeTransferPlan,
   selectOptimalLineup,
 } from './decisions.js';
+import { buildProjectedPlanningTeam } from './plan-policy.js';
+import { deriveRankPolicy } from '../strategy/rank-policy.js';
 
 export interface DeploymentPreflightReport {
   checkedAt: string;
@@ -91,6 +94,13 @@ export async function runDeploymentPreflight(): Promise<DeploymentPreflightRepor
     blockers.push('No live mutation class is enabled');
   }
   if (limits.autoPlayChips) blockers.push('Automatic chip execution is not approved for deployment');
+  const verifiedNewsConfigured = process.env.ENABLE_TWITTER === 'true'
+    && Boolean(process.env.TWITTER_BEARER_TOKEN?.trim());
+  if (limits.runMode === 'live' && !verifiedNewsConfigured) {
+    blockers.push('Live mutation requires ENABLE_TWITTER=true and TWITTER_BEARER_TOKEN');
+  } else if (limits.runMode === 'shadow' && !verifiedNewsConfigured) {
+    warnings.push('Verified deadline-news feed is not configured; execution policy will hold');
+  }
   if (!hasRemoteNotificationConfig()) blockers.push('No remote alert channel is configured');
   if (limits.runMode === 'live' && !kapsoConfigured) {
     blockers.push('Kapso WhatsApp plan and action notifications are not configured');
@@ -128,15 +138,41 @@ export async function runDeploymentPreflight(): Promise<DeploymentPreflightRepor
       if (activeChips.length > 1) blockers.push('Authenticated entry reports multiple active or pending chips');
       if (activeChips.length === 1) warnings.push(`Active chip: ${activeChips[0]!.name}`);
       if (engine && team.picks.length === 15) {
+        const planningGameweek = nextGameweek ?? engine.getCurrentGameweek();
+        let rankPolicy = deriveRankPolicy({
+          gameweek: planningGameweek,
+          overallRank: null,
+          targetRank: getConfiguredTargetRank(),
+        });
+        try {
+          const entry = await client.getEntry(auth.managerId);
+          const overallLeague = entry.leagues.classic.find(league =>
+            league.name.trim().toLowerCase() === 'overall'
+          );
+          rankPolicy = deriveRankPolicy({
+            gameweek: planningGameweek,
+            overallRank: entry.summary_overall_rank,
+            targetRank: getConfiguredTargetRank(),
+            previousOverallRank: overallLeague?.entry_last_rank ?? null,
+          });
+        } catch (error) {
+          warnings.push(`Rank state is unavailable; preflight used balanced policy: ${errorMessage(error)}`);
+        }
         const plan = await optimizeTransferPlan(
           team,
           Math.max(0, limits.maxTransfersPerWeek - team.transfers.made),
-          6
+          6,
+          rankPolicy
         );
         transferConfidence = plan.confidence;
         proposedTransfer = plan.transfers.length > 0
           ? plan.transfers.map(transfer => `${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`).join(', ')
           : 'hold';
+        if (plan.blockedReason) {
+          const detail = `Transfer optimizer withheld its plan: ${plan.blockedReason}`;
+          if (limits.autoExecuteTransfers) blockers.push(detail);
+          else warnings.push(detail);
+        }
         if (plan.transfers.length > 0 && plan.confidence < limits.minTransferConfidence) {
           const detail = `Transfer proposal confidence ${(plan.confidence * 100).toFixed(0)}% is below ${(limits.minTransferConfidence * 100).toFixed(0)}%`;
           if (limits.autoExecuteTransfers) blockers.push(detail);
@@ -147,7 +183,8 @@ export async function runDeploymentPreflight(): Promise<DeploymentPreflightRepor
           if (limits.autoExecuteTransfers) blockers.push(detail);
           else warnings.push(detail);
         }
-        if (plan.transfers.length > 0 && plan.netGain <= 0) {
+        if (plan.transfers.length > 0
+          && (plan.netGain < 0 || (team.transfers.status !== 'unlimited' && plan.netGain === 0))) {
           const detail = `Transfer proposal has non-positive net gain ${plan.netGain.toFixed(1)}`;
           if (limits.autoExecuteTransfers) blockers.push(detail);
           else warnings.push(detail);
@@ -157,7 +194,7 @@ export async function runDeploymentPreflight(): Promise<DeploymentPreflightRepor
           if (limits.autoExecuteTransfers) blockers.push(detail);
           else warnings.push(detail);
         }
-        const lineup = await selectOptimalLineup(team);
+        const lineup = await selectOptimalLineup(buildProjectedPlanningTeam(team, plan), rankPolicy);
         const currentLineupPoints = await calculateCurrentLineupExpectedPoints(team);
         proposedCaptain = lineup.captain.web_name;
         lineupGain = Math.round((lineup.expectedPoints - currentLineupPoints) * 10) / 10;

@@ -12,6 +12,17 @@ export interface NewsItem {
   playerInvolved?: string;
 }
 
+export interface NewsFeedHealth {
+  status: 'healthy' | 'uncertain';
+  lastSuccessfulCheckAt: Date | null;
+  reason: string;
+}
+
+export interface GatheredFPLNews {
+  items: NewsItem[];
+  feedHealth: NewsFeedHealth;
+}
+
 const FPL_ACCOUNT_NAMES = [
   'LiveFPL',
   'FPLFran',
@@ -31,6 +42,8 @@ const FPL_NEWS_SOURCES = [
 
 // Rate limiting - track last API call
 let lastTwitterCall = 0;
+let lastSuccessfulTwitterCheck = 0;
+let twitterFeedFailure: string | null = null;
 const TWITTER_MIN_INTERVAL_MS = 5 * 60 * 1000; // 5 minutes between Twitter calls
 const TWITTER_ENABLED = process.env.ENABLE_TWITTER === 'true' && process.env.TWITTER_BEARER_TOKEN;
 
@@ -55,6 +68,7 @@ export async function checkTwitterNews(): Promise<NewsItem[]> {
   const news: NewsItem[] = [];
   
   if (!TWITTER_ENABLED) {
+    twitterFeedFailure = 'Verified X/Twitter news feed is disabled or unconfigured';
     return news;
   }
   
@@ -83,6 +97,7 @@ export async function checkTwitterNews(): Promise<NewsItem[]> {
     
     if (!response.ok) {
       console.log(`[NEWS] Twitter API error: ${response.status}`);
+      twitterFeedFailure = `Twitter API returned ${response.status}`;
       return news;
     }
     
@@ -91,6 +106,8 @@ export async function checkTwitterNews(): Promise<NewsItem[]> {
       includes?: { users: { id: string; name: string; username: string }[] };
     };
     
+    lastSuccessfulTwitterCheck = now;
+    twitterFeedFailure = null;
     if (!data.data) return news;
     
     const users = data.includes?.users || [];
@@ -107,6 +124,14 @@ export async function checkTwitterNews(): Promise<NewsItem[]> {
         text.includes('setback') ||
         text.includes('return') ||
         text.includes('fit') ||
+        text.includes('starts') ||
+        text.includes('starting xi') ||
+        text.includes('lineup') ||
+        text.includes('line-up') ||
+        text.includes('benched') ||
+        text.includes('on the bench') ||
+        text.includes('dropped') ||
+        text.includes('team leak') ||
         text.includes('scans') ||
         text.includes('suspended');
       
@@ -119,6 +144,7 @@ export async function checkTwitterNews(): Promise<NewsItem[]> {
           content: tweet.text,
           timestamp: new Date(tweet.created_at),
           timestampVerified: true,
+          url: `https://x.com/${user?.username || 'i'}/status/${tweet.id}`,
           priority: text.includes('breaking') || text.includes('confirmed') ? 'high' : 'medium',
           playerInvolved: playerMatch?.[1],
         });
@@ -126,6 +152,7 @@ export async function checkTwitterNews(): Promise<NewsItem[]> {
     }
   } catch (error) {
     console.log('[NEWS] Twitter API error:', error);
+    twitterFeedFailure = error instanceof Error ? error.message : String(error);
   }
   
   return news;
@@ -204,7 +231,7 @@ export async function checkFPLWebsites(): Promise<NewsItem[]> {
   return news;
 }
 
-export async function gatherFPLNews(): Promise<NewsItem[]> {
+export async function gatherFPLNewsWithHealth(): Promise<GatheredFPLNews> {
   console.log('[NEWS] Gathering FPL news from multiple sources...');
   
   const [twitterNews, websiteNews] = await Promise.all([
@@ -222,8 +249,6 @@ export async function gatherFPLNews(): Promise<NewsItem[]> {
   });
   
   const realNews = allNews.filter(n => 
-    n.playerInvolved && 
-    n.playerInvolved.length > 4 &&
     !n.title.includes('font') &&
     !n.title.includes('block') &&
     !n.title.includes('header')
@@ -238,5 +263,28 @@ export async function gatherFPLNews(): Promise<NewsItem[]> {
     console.log('[NEWS] No breaking news found.');
   }
   
-  return realNews;
+  const checkedAt = Date.now();
+  const successfulAt = lastSuccessfulTwitterCheck > 0
+    ? new Date(lastSuccessfulTwitterCheck)
+    : null;
+  const twitterFresh = successfulAt !== null
+    && checkedAt - successfulAt.getTime() <= TWITTER_MIN_INTERVAL_MS * 2;
+  return {
+    items: realNews,
+    feedHealth: twitterFresh && !twitterFeedFailure
+      ? {
+        status: 'healthy',
+        lastSuccessfulCheckAt: successfulAt,
+        reason: 'Verified X/Twitter feed checked successfully',
+      }
+      : {
+        status: 'uncertain',
+        lastSuccessfulCheckAt: successfulAt,
+        reason: twitterFeedFailure ?? 'Verified X/Twitter feed has no recent successful check',
+      },
+  };
+}
+
+export async function gatherFPLNews(): Promise<NewsItem[]> {
+  return (await gatherFPLNewsWithHealth()).items;
 }

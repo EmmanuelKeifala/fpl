@@ -38,6 +38,8 @@ function heuristicForecast(playerId: number, points: number): ExpectedPoints {
     nextGW: points,
     next5GW: points,
     confidence: 0.8,
+    availability: { appearanceProbability: 0.9, startProbability: 0.85, zeroMinuteProbability: 0.1 },
+    distribution: { p10: 0, p50: points, p90: points + 3, haulProbability: 0.2 },
     breakdown: {
       formFactor: 1,
       fixtureFactor: 1,

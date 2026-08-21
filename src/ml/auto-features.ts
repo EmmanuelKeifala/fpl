@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { mkdir, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { Fixture } from '../api/types.js';
+import type { Fixture, Player } from '../api/types.js';
 import type { MlShadowConfig } from './config.js';
 import {
   validateLiveFeatureSidecar,
@@ -22,6 +22,7 @@ export interface MlFeatureExpectation {
   season: string;
   gameweek: number;
   fixtures: readonly Fixture[];
+  players: readonly Pick<Player, 'id' | 'team' | 'element_type'>[];
 }
 
 type Generator = (options: {

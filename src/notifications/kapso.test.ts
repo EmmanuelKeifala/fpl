@@ -38,10 +38,13 @@ function environment(mode: 'template' | 'text' = 'template'): NodeJS.ProcessEnv 
   };
 }
 
-test('Kapso sends the approved named-parameter template through the official messages endpoint', async () => {
+test('Kapso sends a provider-safe named-parameter template through the official messages endpoint', async () => {
   let requestedUrl = '';
   let requestedInit: RequestInit | undefined;
-  const delivery = await sendKapsoWhatsAppUpdate(update(), environment(), {
+  const delivery = await sendKapsoWhatsAppUpdate(update({
+    summary: 'Player A -> Player B\tconfirmed',
+    details: { Note: 'five     spaces' },
+  }), environment(), {
     fetch: (async (url: string | URL | Request, init?: RequestInit) => {
       requestedUrl = String(url);
       requestedInit = init;
@@ -63,7 +66,10 @@ test('Kapso sends the approved named-parameter template through the official mes
   assert.equal(payload.template.name, 'fpl_agent_update');
   assert.equal(payload.template.language.code, 'en_US');
   assert.equal(payload.template.components[0].parameters[0].parameter_name, 'update');
-  assert.match(payload.template.components[0].parameters[0].text, /BEFORE · Transfer/);
+  const templateText = payload.template.components[0].parameters[0].text as string;
+  assert.match(templateText, /FPL Agent · GW1 · BEFORE · Transfer/);
+  assert.doesNotMatch(templateText, /[\r\n\t]/);
+  assert.doesNotMatch(templateText, / {5}/);
   assert.match(payload.biz_opaque_callback_data, /^fpl:[a-f0-9]{32}$/);
 });
 
@@ -76,6 +82,7 @@ test('Kapso supports text canaries and retries only transient responses', async 
       const payload = JSON.parse(String(init?.body)) as Record<string, any>;
       assert.equal(payload.type, 'text');
       assert.equal(payload.text.preview_url, false);
+      assert.match(payload.text.body, /FPL Agent · GW1\nBEFORE · System/);
       if (attempts.length < 3) return new Response(JSON.stringify({ error: { message: 'try again' } }), { status: 503 });
       return new Response(JSON.stringify({ messages: [{ id: 'wamid.retry' }] }), { status: 200 });
     }) as typeof fetch,

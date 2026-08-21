@@ -5,10 +5,11 @@
 The worker is suitable for supervised 2026/27 shadow observation. It is not
 approved for unattended live mutations.
 
-The repository now includes a Render Blueprint for a single paid background
-worker with a persistent disk. Render cron jobs are not used because they cannot
-mount persistent disks, and a background worker matches the continuous polling
-loop. The Blueprint remains fail-closed in shadow mode.
+The preferred deployment is now the single-worker local Docker Compose profile
+documented in `docs/local-docker.md`. It stores durable state in the host
+`data/` directory, restarts under Docker supervision, and mirrors the Render
+worker's enabled ML, LLM, and Kapso configuration. The Render Blueprint remains
+available as an optional hosted path and remains fail-closed in shadow mode.
 
 The local safe posture is:
 
@@ -19,7 +20,16 @@ AUTO_SET_LINEUP=false
 AUTO_PLAY_CHIPS=false
 EMERGENCY_STOP=true
 MAX_TRANSFERS_PER_WEEK=1
+MAX_UNLIMITED_TRANSFERS=15
+FPL_TARGET_RANK=100000
+PROTECT_TEMPLATE_WEIGHT=0.20
+TEMPLATE_CORE_OWNERSHIP_THRESHOLD=25
+MIN_TEMPLATE_CORE_PLAYERS=6
+TEMPLATE_ANCHOR_OWNERSHIP_THRESHOLD=60
 MAX_TRANSFER_HIT_COST=0
+FINALIZATION_WINDOW_MINUTES=5
+DEADLINE_SAFETY_MINUTES=3
+DEADLINE_NEWS_POLL_MINUTES=1
 FPL_ML_SHADOW_ENABLED=true
 FPL_ML_AUTO_FEATURES=true
 FPL_LLM_ENABLED=true
@@ -41,9 +51,12 @@ npm run llm:smoke
 npm run kapso:smoke
 ```
 
-For Render, create a Blueprint from `render.yaml`, enter every prompted secret,
-and leave the service name and disk mount unchanged. The first deployment is an
-observer deployment, not authorization for live mutations.
+For local hardware, build and start the worker with `docker --context default
+compose up -d --build`, then inspect `docker --context default compose logs
+--tail=200 worker` and the container health. For Render, create a Blueprint from
+`render.yaml`, enter every prompted secret, and leave the service name and disk
+mount unchanged. Every first deployment is an observer deployment, not
+authorization for live mutations.
 
 `preflight:live` must fail while the worker is intentionally in shadow mode:
 
@@ -70,7 +83,37 @@ npm run preflight:live
 - Every mutation is bound to manager, season, gameweek, deadline, safety margin,
   and the exact pre-action team fingerprint.
 - Transfers validate selling/purchase prices, positions, budget, uniqueness,
-  club limits, transaction eligibility, and the final squad composition.
+  club limits, transaction eligibility, and the final squad, bank, hit cost,
+  transfer count, and active-chip state.
+- An explicit FPL `unlimited` transfer period uses an atomic, budget-valid
+  full-squad rebuild. Ordinary gameweeks retain the configured one-to-five
+  transfer cap; oversized rebuilds are blocked rather than truncated.
+- Rank state selects a protect, balanced, or push policy. Early-season or
+  missing rank data falls back to balanced; mode hysteresis prevents noisy
+  week-to-week switching.
+- Ownership is a bounded tie-break only after xP, start-probability, and upside
+  gates. Low ownership alone earns no value. Core/anchor constraints apply in
+  protect mode and the early-season balanced fallback; push mode remains free
+  to select calculated differentials, with caps on concentrated low-owned
+  exposure.
+- Preseason rebuilds use a cautious three-gameweek horizon, an active Wildcard
+  uses the permanent planning horizon, and an active Free Hit uses one week.
+  Unexplained `unlimited` status is blocked.
+- A 50% flag is applied once to next-round appearance probability, not again to
+  conditional minutes or every later fixture. Fresh verified lineup reports
+  can supersede stale generic doubts; contradictory reports force HOLD.
+- Ordinary execution waits for the final window, polls deadline news every
+  minute, targets finalization at T-5, and hard-stops at T-3. Early transfers
+  require the same stable plan in consecutive cycles plus a high-confidence
+  official price signal with material affordability/value impact. Heuristic
+  transfer-volume estimates never authorize an early mutation.
+- Live mutation also requires a fresh verified news feed. Missing, stale, or
+  failed feeds hold transfers, lineup, captaincy, and chips.
+- Wildcard activation is still not automated. Activating a Wildcard does not
+  freeze player prices: it permits unlimited free transfers while normal
+  purchase, selling-price, bank, and price-change rules continue. Once FPL
+  reports Wildcard or Free Hit as active, lineup updates preserve and reconcile
+  that transfer-chip state without attempting to reactivate it.
 - Lineups validate exact squad membership, positions 1-15, legal formation,
   substitute goalkeeper, captain, and vice-captain.
 - POST results are reread from `/my-team/`. Unknown outcomes quarantine future
@@ -87,13 +130,14 @@ npm run preflight:live
   database-backed command against the same file.
 - ML remains a separate shadow observer with no optimizer or execution path.
 - ML feature sidecars are generated automatically per gameweek, validated
-  against the current public schedule and model schema, and regenerated on drift.
+  against the exact current roster fingerprint, public schedule, and model
+  schema, and regenerated on missing, extra, transferred, or reclassified players.
 
 ## Rollout Stages
 
 1. Shadow only through GW1. Compare every proposed lineup, captain, transfer,
    and chip against a human decision before the deadline.
-2. Require at least three consecutive gameweeks with timely cycles, no stale
+2. Require at least six to eight consecutive gameweeks with timely cycles, no stale
    health status, no unresolved operations, and acceptable forecast error.
 3. Consider a lineup-only canary for one gameweek. Keep transfers, hits, and
    chips disabled. Review the exact pending selection manually before enabling.

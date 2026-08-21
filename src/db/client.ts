@@ -268,7 +268,11 @@ async function initializeDatabase(): Promise<SqlJsDatabase> {
       source TEXT NOT NULL,
       source_tier INTEGER NOT NULL,
       confidence REAL NOT NULL,
+      availability_probability REAL,
       minutes_multiplier REAL NOT NULL,
+      expected_minutes_floor REAL,
+      confirmed_lineup INTEGER NOT NULL DEFAULT 0,
+      conflicted INTEGER NOT NULL DEFAULT 0,
       published_at INTEGER,
       retrieved_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL,
@@ -286,7 +290,11 @@ async function initializeDatabase(): Promise<SqlJsDatabase> {
       source TEXT NOT NULL,
       source_tier INTEGER NOT NULL,
       confidence REAL NOT NULL,
+      availability_probability REAL,
       minutes_multiplier REAL NOT NULL,
+      expected_minutes_floor REAL,
+      confirmed_lineup INTEGER NOT NULL DEFAULT 0,
+      conflicted INTEGER NOT NULL DEFAULT 0,
       published_at INTEGER,
       retrieved_at INTEGER NOT NULL,
       expires_at INTEGER NOT NULL,
@@ -361,6 +369,10 @@ async function initializeDatabase(): Promise<SqlJsDatabase> {
   ensureColumn(sqlDb, 'ml_shadow_forecast_runs', 'feature_sidecar_path', 'TEXT');
   ensureColumn(sqlDb, 'ml_shadow_player_forecasts', 'ml_expected_appearances', 'REAL');
   ensureColumn(sqlDb, 'ml_shadow_player_forecasts', 'ml_expected_starts', 'REAL');
+  ensureColumn(sqlDb, 'player_news_signals_scoped', 'availability_probability', 'REAL');
+  ensureColumn(sqlDb, 'player_news_signals_scoped', 'expected_minutes_floor', 'REAL');
+  ensureColumn(sqlDb, 'player_news_signals_scoped', 'confirmed_lineup', 'INTEGER NOT NULL DEFAULT 0');
+  ensureColumn(sqlDb, 'player_news_signals_scoped', 'conflicted', 'INTEGER NOT NULL DEFAULT 0');
   ensureColumn(sqlDb, 'player_observations', 'season', 'TEXT');
   ensureColumn(sqlDb, 'fixture_observations', 'season', 'TEXT');
   ensureColumn(sqlDb, 'player_forecasts', 'season', 'TEXT');
@@ -389,8 +401,9 @@ export async function savePlayerNewsSignals(season: string, signals: PlayerNewsS
   const statement = db.prepare(`
     INSERT INTO player_news_signals_scoped (
       season, gameweek, player_id, signal_type, source, source_tier, confidence,
-      minutes_multiplier, published_at, retrieved_at, expires_at, evidence, timestamp_verified
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      availability_probability, minutes_multiplier, expected_minutes_floor,
+      confirmed_lineup, conflicted, published_at, retrieved_at, expires_at, evidence, timestamp_verified
+    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `);
   try {
     for (const signal of signals) {
@@ -402,7 +415,11 @@ export async function savePlayerNewsSignals(season: string, signals: PlayerNewsS
         signal.source,
         signal.sourceTier,
         signal.confidence,
+        signal.availabilityProbability,
         signal.minutesMultiplier,
+        signal.expectedMinutesFloor,
+        signal.confirmedLineup ? 1 : 0,
+        signal.conflicted ? 1 : 0,
         signal.publishedAt?.getTime() ?? null,
         signal.retrievedAt.getTime(),
         signal.expiresAt.getTime(),

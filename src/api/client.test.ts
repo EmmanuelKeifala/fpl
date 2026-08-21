@@ -88,6 +88,7 @@ test('transfer mutation is deadline fenced, uses current chip contract, and conf
   const deadline = new Date(Date.now() + 24 * 60 * 60_000);
   const before = team();
   const after = team([...Array.from({ length: 14 }, (_, index) => index + 1), 16]);
+  after.transfers.made = 1;
   let postedBody: Record<string, unknown> | null = null;
   let teamReads = 0;
   globalThis.fetch = async (input, init) => {
@@ -129,6 +130,52 @@ test('transfer mutation is deadline fenced, uses current chip contract, and conf
     assert.equal('wildcard' in (postedBody ?? {}), false);
     assert.equal('freehit' in (postedBody ?? {}), false);
   } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('transfer reconciliation quarantines a correct squad with the wrong economic state', async () => {
+  const originalFetch = globalThis.fetch;
+  const deadline = new Date(Date.now() + 24 * 60 * 60_000);
+  const before = team();
+  const after = team([...Array.from({ length: 14 }, (_, index) => index + 1), 16]);
+  after.transfers.made = 1;
+  after.transfers.bank = 1;
+  let teamReads = 0;
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/me/')) return Response.json({ player: { entry: 129 } });
+    if (url.endsWith('/bootstrap-static/')) {
+      return Response.json({
+        events: [{ id: 1, deadline_time: deadline.toISOString(), can_manage: true }],
+        elements: Array.from({ length: 16 }, (_, index) => player(index + 1)),
+      });
+    }
+    if (url.endsWith('/my-team/129/')) return Response.json(teamReads++ === 0 ? before : after);
+    if (url.endsWith('/transfers/') && init?.method === 'POST') return new Response(null, { status: 204 });
+    throw new Error(`Unexpected request ${url}`);
+  };
+
+  try {
+    process.env.FPL_EXPECTED_MANAGER_ID = '129';
+    const client = new FPLClient(undefined, 'token', 129, 129);
+    assert.equal((await client.authenticate()).authenticated, true);
+    const result = await client.makeTransfers([
+      { playerOut: 15, playerIn: 16, purchasePrice: 50, sellingPrice: 50 },
+    ], {
+      season: seasonFor(deadline),
+      gameweek: 1,
+      deadlineAt: deadline,
+      safetyMarginMs: 15 * 60_000,
+      expectedManagerId: 129,
+      expectedTeamFingerprint: fingerprintMyTeam(before),
+    });
+    assert.equal(result.success, false);
+    assert.equal(result.outcome, 'unknown');
+    assert.match(result.message, /does not match/i);
+    assert.equal(client.isMutationQuarantined(), true);
+  } finally {
+    process.env.FPL_EXPECTED_MANAGER_ID = '123';
     globalThis.fetch = originalFetch;
   }
 });
@@ -213,6 +260,75 @@ test('team update cannot silently cancel an active chip', async () => {
     assert.equal(result.success, false);
     assert.match(result.message, /must be preserved/);
     assert.equal(posts, 0);
+  } finally {
+    process.env.FPL_EXPECTED_MANAGER_ID = '123';
+    delete process.env.AUTO_SET_LINEUP;
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('lineup updates preserve an already-active wildcard without resubmitting it', async () => {
+  const originalFetch = globalThis.fetch;
+  const deadline = new Date(Date.now() + 24 * 60 * 60_000);
+  const current = team();
+  current.chips = [{
+    name: 'wildcard',
+    number: 1,
+    status_for_entry: 'active',
+    is_pending: true,
+    played_by_entry: [],
+    start_event: 1,
+    stop_event: 19,
+    chip_type: 'transfer',
+  }];
+  current.transfers.status = 'unlimited';
+  const selection = changedSelection();
+  const after = team(selection.map(pick => pick.element));
+  after.picks = selection.map(pick => ({
+    element: pick.element,
+    position: pick.position,
+    multiplier: pick.position <= 11 ? 1 : 0,
+    is_captain: pick.isCaptain,
+    is_vice_captain: pick.isViceCaptain,
+    purchase_price: 50,
+    selling_price: 50,
+  }));
+  after.chips = current.chips;
+  after.transfers = current.transfers;
+  let teamReads = 0;
+  let postedChip: unknown = 'not-posted';
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (url.endsWith('/me/')) return Response.json({ player: { entry: 130 } });
+    if (url.endsWith('/bootstrap-static/')) {
+      return Response.json({
+        events: [{ id: 1, deadline_time: deadline.toISOString(), can_manage: true }],
+        elements: Array.from({ length: 16 }, (_, index) => player(index + 1)),
+      });
+    }
+    if (url.endsWith('/my-team/130/') && init?.method === 'POST') {
+      postedChip = JSON.parse(String(init.body)).chip;
+      return new Response(null, { status: 204 });
+    }
+    if (url.endsWith('/my-team/130/')) return Response.json(teamReads++ === 0 ? current : after);
+    throw new Error(`Unexpected request ${url}`);
+  };
+
+  try {
+    process.env.FPL_EXPECTED_MANAGER_ID = '130';
+    process.env.AUTO_SET_LINEUP = 'true';
+    const client = new FPLClient(undefined, 'token', 130, 130);
+    assert.equal((await client.authenticate()).authenticated, true);
+    const result = await client.updateTeam(selection, {
+      season: seasonFor(deadline),
+      gameweek: 1,
+      deadlineAt: deadline,
+      safetyMarginMs: 15 * 60_000,
+      expectedManagerId: 130,
+      expectedTeamFingerprint: fingerprintMyTeam(current),
+    }, null);
+    assert.equal(result.success, true);
+    assert.equal(postedChip, null);
   } finally {
     process.env.FPL_EXPECTED_MANAGER_ID = '123';
     delete process.env.AUTO_SET_LINEUP;
@@ -324,6 +440,7 @@ test('second-half mutations use the season start rather than the target deadline
   const targetDeadline = new Date(`${startYear + 1}-01-15T17:30:00Z`);
   const before = team();
   const after = team([...Array.from({ length: 14 }, (_, index) => index + 1), 16]);
+  after.transfers.made = 1;
   let teamReads = 0;
   globalThis.fetch = async input => {
     const url = String(input);

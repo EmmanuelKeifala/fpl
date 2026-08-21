@@ -7,10 +7,10 @@ import {
   buildDecisionContext,
   gatherIntelligence,
   optimizeTransferPlan,
-  selectOptimalCaptain, 
   selectOptimalLineup,
   evaluateChips,
   getActiveLineupChip,
+  hasUnlimitedTransfers,
   calculateCurrentLineupExpectedPoints,
   type DecisionContext 
 } from './decisions.js';
@@ -49,6 +49,13 @@ import {
   reviewLineupWithLlm,
   reviewTransferPlanWithLlm,
 } from './llm-review.js';
+import { buildProjectedPlanningTeam, getGameweekPlanDisposition } from './plan-policy.js';
+import {
+  decideDeadlineExecution,
+  effectiveSellingPriceLossAfterFall,
+  type DeadlineExecutionDecision,
+  type EarlyPriceTrigger,
+} from './execution-policy.js';
 import { getKapsoWhatsAppConfig } from '../notifications/kapso-config.js';
 import {
   flushKapsoWhatsAppUpdates,
@@ -69,6 +76,7 @@ const POLL_INTERVAL = TIMING.pollIntervalMs;
 const PRE_DEADLINE_HOURS = TIMING.preDeadlineHours;
 const DEADLINE_NEWS_WINDOW = TIMING.deadlineNewsWindowMs;
 const DEADLINE_NEWS_POLL_INTERVAL = TIMING.deadlineNewsPollIntervalMs;
+const FINALIZATION_WINDOW = TIMING.finalizationWindowMs;
 
 let runnerState: RunnerState = {
   phase: 'monitor',
@@ -87,6 +95,11 @@ const runnerStartedAt = new Date().toISOString();
 let lastCycleStartedAt: string | null = null;
 let lastCycleCompletedAt: string | null = null;
 let consecutiveCycleFailures = 0;
+let observedTransferPlan: {
+  gameweek: number;
+  fingerprint: string;
+  observations: number;
+} | null = null;
 
 function updateHealth(status: RunnerHealthStatus, error: string | null = null): void {
   writeRunnerHealth(process.env.FPL_HEALTH_PATH?.trim() || 'data/runner-health.json', {
@@ -109,6 +122,91 @@ function getPhase(hoursToDeadline: number, isPostDeadline: boolean): RunnerPhase
   return 'monitor';
 }
 
+function decideCurrentDeadlineExecution(
+  context: DecisionContext,
+  planReady: boolean,
+  planStable: boolean,
+  priceTrigger: EarlyPriceTrigger | null
+): DeadlineExecutionDecision {
+  const limits = getSafetyLimits();
+  return decideDeadlineExecution({
+    now: new Date(),
+    deadline: context.deadline ?? new Date(Number.NaN),
+    finalizationWindowMs: TIMING.finalizationWindowMs,
+    hardSafetyMarginMs: limits.deadlineSafetyMinutes * 60_000,
+    planReady,
+    planStable,
+    priceTrigger,
+    minimumEarlyPriceConfidence: TIMING.minimumEarlyPriceConfidence,
+    minimumExpectedValueLossTenths: TIMING.minimumEarlyPriceValueLossTenths,
+    intelligence: {
+      feedStatus: context.intelligenceFeed.status,
+      lastSuccessfulCheckAt: context.intelligenceFeed.lastSuccessfulCheckAt,
+      maximumAgeMs: TIMING.intelligenceMaximumAgeMs,
+      hasConflictingNews: context.newsSignals.some(signal => signal.conflicted),
+    },
+  });
+}
+
+function observeTransferPlanStability(
+  gameweek: number,
+  plan: Awaited<ReturnType<typeof optimizeTransferPlan>>
+): boolean {
+  const fingerprint = [
+    plan.mode,
+    ...[...plan.targetPlayerIds].sort((left, right) => left - right),
+    ...plan.transfers
+      .map(transfer => `${transfer.playerOut.id}->${transfer.playerIn.id}`)
+      .sort(),
+  ].join(':');
+  if (observedTransferPlan?.gameweek === gameweek
+    && observedTransferPlan.fingerprint === fingerprint) {
+    observedTransferPlan.observations++;
+  } else {
+    observedTransferPlan = { gameweek, fingerprint, observations: 1 };
+  }
+  return observedTransferPlan.observations >= 2;
+}
+
+function deriveEarlyPriceTrigger(
+  plan: Awaited<ReturnType<typeof optimizeTransferPlan>>,
+  currentBank: number,
+  engine: Awaited<ReturnType<typeof getOptimizationEngine>>
+): EarlyPriceTrigger | null {
+  if (plan.transfers.length === 0) return null;
+  const finalBank = currentBank + plan.transfers.reduce(
+    (sum, transfer) => sum + transfer.sellingPrice - transfer.playerIn.now_cost,
+    0
+  );
+  let confidence = 0;
+  let expectedValueLossTenths = 0;
+  const impactConfidences: number[] = [];
+  for (const transfer of plan.transfers) {
+    const incoming = engine.predictPriceChange(transfer.playerIn.id);
+    if (incoming.source === 'official' && incoming.prediction === 'rise') {
+      impactConfidences.push(incoming.confidence);
+      expectedValueLossTenths++;
+    }
+    const outgoing = engine.predictPriceChange(transfer.playerOut.id);
+    if (outgoing.source === 'official' && outgoing.prediction === 'fall') {
+      const sellingPriceLoss = effectiveSellingPriceLossAfterFall({
+        purchasePrice: transfer.purchasePrice,
+        currentPrice: transfer.playerOut.now_cost,
+        currentSellingPrice: transfer.sellingPrice,
+        sellOnFeeRatio: engine.getSeasonConfig().sellOnFeeRatio,
+      });
+      if (sellingPriceLoss <= 0) continue;
+      impactConfidences.push(outgoing.confidence);
+      expectedValueLossTenths += sellingPriceLoss;
+    }
+  }
+  confidence = impactConfidences.length > 0 ? Math.min(...impactConfidences) : 0;
+  const makesPlanUnaffordable = expectedValueLossTenths > finalBank;
+  return confidence > 0
+    ? { confidence, makesPlanUnaffordable, expectedValueLossTenths }
+    : null;
+}
+
 async function initialize(): Promise<boolean> {
   console.log('\n========================================');
   console.log('FPL AUTONOMOUS RUNNER - Starting...');
@@ -118,6 +216,10 @@ async function initialize(): Promise<boolean> {
   if (limits.runMode === 'live' && !hasRemoteNotificationConfig()) {
     throw new Error('Live mode requires a configured remote alert channel');
   }
+  if (limits.runMode === 'live'
+    && (process.env.ENABLE_TWITTER !== 'true' || !process.env.TWITTER_BEARER_TOKEN?.trim())) {
+    throw new Error('Live mode requires a configured verified X/Twitter deadline-news feed');
+  }
   const kapsoConfig = getKapsoWhatsAppConfig();
   if (limits.runMode === 'live' && !kapsoConfig.enabled) {
     throw new Error('Live mode requires Kapso WhatsApp plan and action notifications');
@@ -126,6 +228,10 @@ async function initialize(): Promise<boolean> {
   console.log(`  - Run Mode: ${limits.runMode}`);
   console.log(`  - Expected Manager: ${limits.expectedManagerId ?? 'not configured'}`);
   console.log(`  - Max Transfers/Week: ${limits.maxTransfersPerWeek}`);
+  console.log(`  - Max Unlimited Rebuild Transfers: ${limits.maxUnlimitedTransfers}`);
+  console.log(`  - Market Protection (protect/early-season) Weight: ${limits.protectTemplateWeight.toFixed(2)}`);
+  console.log(`  - Market Protection (protect/early-season) Core: at least ${limits.minimumTemplateCorePlayers} player(s) at ${limits.templateCoreOwnershipThreshold.toFixed(0)}% ownership`);
+  console.log(`  - Market Protection (protect/early-season) Anchor Threshold: ${limits.templateAnchorOwnershipThreshold.toFixed(0)}% ownership`);
   console.log(`  - Min xP Gain for Hit: ${limits.minXPGainForHit}`);
   console.log(`  - Auto-Execute Transfers: ${limits.autoExecuteTransfers}`);
   console.log(`  - Auto-Set Lineup: ${limits.autoSetLineup}`);
@@ -136,7 +242,11 @@ async function initialize(): Promise<boolean> {
   console.log(`  - Minimum Transfer Confidence: ${(limits.minTransferConfidence * 100).toFixed(0)}%`);
   console.log(`  - Deadline Safety Margin: ${limits.deadlineSafetyMinutes} minutes`);
   console.log(`  - Poll Interval: ${POLL_INTERVAL / 60000} minutes`);
-  console.log(`  - Pre-Deadline Hours: ${PRE_DEADLINE_HOURS}h\n`);
+  console.log(`  - Pre-Deadline Hours: ${PRE_DEADLINE_HOURS}h`);
+  console.log(`  - Finalization Window: ${FINALIZATION_WINDOW / 60_000} minutes`);
+  console.log(`  - Intelligence Maximum Age: ${TIMING.intelligenceMaximumAgeMs / 60_000} minutes`);
+  console.log(`  - Minimum Early-Price Confidence: ${(TIMING.minimumEarlyPriceConfidence * 100).toFixed(0)}%`);
+  console.log(`  - Minimum Early-Price Loss: ${TIMING.minimumEarlyPriceValueLossTenths} price tick(s)\n`);
 
   console.log(`[CONFIG] Kapso WhatsApp Observability:`);
   console.log(`  - Enabled: ${kapsoConfig.enabled}`);
@@ -257,27 +367,31 @@ async function runMonitorPhase(context: DecisionContext): Promise<void> {
 }
 
 async function runPlanPhase(context: DecisionContext): Promise<void> {
-  console.log('\n=== PLAN PHASE (2-24h to deadline) ===\n');
+  console.log(`\n=== PLAN PHASE (${PRE_DEADLINE_HOURS}-24h to deadline) ===\n`);
   
   const limits = getSafetyLimits();
   const transferPlan = await optimizeTransferPlan(
     context.myTeam!,
     Math.max(0, limits.maxTransfersPerWeek - context.myTeam!.transfers.made),
-    6
+    6,
+    context.rankPolicy
   );
   
-  console.log(`[PLAN] Optimized ${transferPlan.horizon}-GW plan: ${transferPlan.transfers.length} transfer(s), net gain ${transferPlan.netGain.toFixed(1)} xP`);
+  console.log(`[PLAN] Optimized ${transferPlan.horizon}-GW ${transferPlan.mode} in ${context.rankPolicy.mode} mode: ${transferPlan.transfers.length} transfer(s), net gain ${transferPlan.netGain.toFixed(1)} xP, template protection ${transferPlan.templateProtectionGain.toFixed(2)}, rank utility ${transferPlan.rankUtilityGain.toFixed(2)}`);
+  if (transferPlan.blockedReason) console.log(`[PLAN] Plan withheld: ${transferPlan.blockedReason}`);
   for (const transfer of transferPlan.transfers) {
     console.log(`  - ${transfer.playerOut.web_name} OUT -> ${transfer.playerIn.web_name} IN`);
   }
   
-  // Select captain
-  const captainResult = await selectOptimalCaptain(context.myTeam!);
-  console.log(`[PLAN] Captain recommendation: ${captainResult.captain.web_name} (${captainResult.xp.toFixed(1)} xP)`);
+  // Plan against the same legal lineup and captaincy path used immediately
+  // before execution, including the proposed transfers.
+  const plannedTeam = buildProjectedPlanningTeam(context.myTeam!, transferPlan);
+  const lineup = await selectOptimalLineup(plannedTeam, context.rankPolicy);
+  console.log(`[PLAN] Proposed optimized XI captain pending review: ${lineup.captain.web_name} (${lineup.captainExpectedPoints.toFixed(1)} xP)`);
   
   // Evaluate chips
-  const chipRecommendations = await evaluateChips(context.myTeam!, context.gameweek);
-  console.log(`[PLAN] Chip recommendations: ${chipRecommendations.length}`);
+  const chipRecommendations = await evaluateChips(plannedTeam, context.gameweek, lineup);
+  console.log(`[PLAN] Proposed chip candidates pending review: ${chipRecommendations.length}`);
   for (const chip of chipRecommendations) {
     console.log(`  - ${chip.chip}: ${chip.reasoning} (Confidence: ${(chip.confidence * 100).toFixed(0)}%)`);
   }
@@ -286,13 +400,14 @@ async function runPlanPhase(context: DecisionContext): Promise<void> {
     context,
     transferPlan,
     captain: {
-      id: captainResult.captain.id,
-      name: captainResult.captain.web_name,
-      expectedPoints: captainResult.xp,
+      id: lineup.captain.id,
+      name: lineup.captain.web_name,
+      expectedPoints: lineup.captainExpectedPoints,
     },
     chips: chipRecommendations,
   });
   console.log(`[LLM] Gameweek plan review: ${llmReviewSummary(llmReview)}`);
+  const disposition = getGameweekPlanDisposition(llmReview, limits.runMode, Boolean(transferPlan.blockedReason));
 
   const transferSummary = transferPlan.transfers.length > 0
     ? transferPlan.transfers.map(transfer => `${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`).join(', ')
@@ -301,7 +416,7 @@ async function runPlanPhase(context: DecisionContext): Promise<void> {
     context.season,
     context.gameweek,
     transferSummary,
-    captainResult.captain.id,
+    lineup.captain.id,
     chipRecommendations.map(chip => chip.chip).sort().join(','),
     llmReviewSummary(llmReview),
   ].join('|');
@@ -310,55 +425,89 @@ async function runPlanPhase(context: DecisionContext): Promise<void> {
     gameweek: context.gameweek,
     stage: 'plan',
     action: 'gameweek-plan',
-    status: limits.runMode === 'shadow' ? 'shadow' : 'planned',
-    summary: transferSummary,
+    status: disposition.kapsoStatus,
+    summary: disposition.held ? `Withheld: ${transferSummary}` : transferSummary,
     details: {
-      Captain: captainResult.captain.web_name,
+      [disposition.held ? 'Proposed captain' : 'Captain']: lineup.captain.web_name,
+      [disposition.held ? 'Proposed vice-captain' : 'Vice-captain']: lineup.viceCaptain.web_name,
+      [disposition.held ? 'Proposed starting XI' : 'Starting XI']: lineup.startingXI.map(player => player.web_name),
+      [disposition.held ? 'Proposed bench' : 'Bench']: lineup.bench.map(player => player.web_name),
       'Projected net gain': `${transferPlan.netGain.toFixed(1)} xP`,
-      Chips: chipRecommendations.map(chip => chip.chip),
+      'Template protection': transferPlan.templateProtectionGain.toFixed(2),
+      'Rank mode': context.rankPolicy.mode,
+      'Rank utility': transferPlan.rankUtilityGain.toFixed(2),
+      [disposition.held ? 'Proposed chips' : 'Chips']: chipRecommendations.map(chip => chip.chip),
       'LLM review': llmReviewSummary(llmReview),
+      Publication: disposition.held ? 'Withheld by LLM review' : 'Published as planned',
       Deadline: context.deadline?.toISOString() ?? 'unavailable',
     },
     runMode: limits.runMode,
     dedupeKey: `plan:${planFingerprint}`,
   });
   
-  // Notify all recommendations
+  // Publish the reviewed disposition; a hold is observable but never labelled
+  // as an approved recommendation.
   await notify({
     type: 'summary',
-    title: 'GW Planning Complete',
+    title: disposition.notificationTitle,
     message: `${context.gameweek} | ${context.hoursToDeadline.toFixed(1)}h to deadline`,
     data: {
       'Phase': 'Plan',
-      'Transfers': transferPlan.transfers.length,
+      [disposition.held ? 'Proposed Transfers' : 'Transfers']: transferPlan.transfers.length,
       'Projected Net Gain': transferPlan.netGain,
-      'Captain': captainResult.captain.web_name,
-      'Chips Recommended': chipRecommendations.length,
+      'Template Protection': transferPlan.templateProtectionGain,
+      'Rank Mode': context.rankPolicy.mode,
+      'Rank Utility': transferPlan.rankUtilityGain,
+      [disposition.held ? 'Proposed Captain' : 'Captain']: lineup.captain.web_name,
+      [disposition.held ? 'Proposed Chips' : 'Chips Recommended']: chipRecommendations.length,
+      'Publication': disposition.held ? 'Withheld by LLM review' : 'Published as planned',
       'Team Health Alerts': context.teamHealth.alerts.length,
       'LLM Review': llmReviewSummary(llmReview),
     },
     timestamp: new Date(),
   });
   
-  console.log('[PLAN] Recommendations generated and notified.\n');
+  console.log(disposition.held
+    ? '[PLAN] Proposal withheld after LLM HOLD; no recommendation was published.\n'
+    : '[PLAN] Recommendations generated and notified.\n');
 }
 
 async function runExecutePhase(context: DecisionContext): Promise<void> {
-  console.log('\n=== EXECUTE PHASE (<2h to deadline) ===\n');
+  console.log(`\n=== EXECUTE PHASE (<${PRE_DEADLINE_HOURS}h to deadline) ===\n`);
 
   const limits = getSafetyLimits();
 
   const optimizedPlan = await optimizeTransferPlan(
     context.myTeam!,
     Math.max(0, limits.maxTransfersPerWeek - context.myTeam!.transfers.made),
-    6
+    6,
+    context.rankPolicy
   );
   const transferPlan = optimizedPlan.transfers;
   const totalXPGain = optimizedPlan.expectedGain;
   const hitCost = optimizedPlan.hitCost;
+  const engine = await getOptimizationEngine();
+  const planStable = observeTransferPlanStability(context.gameweek, optimizedPlan);
+  const priceTrigger = deriveEarlyPriceTrigger(optimizedPlan, context.bank, engine);
+  const executionDecision = decideCurrentDeadlineExecution(
+    context,
+    !optimizedPlan.blockedReason,
+    planStable,
+    priceTrigger
+  );
+
+  console.log(
+    `[TIMING] ${executionDecision.phase}/${executionDecision.action}: ${executionDecision.reason}; `
+    + `${(executionDecision.millisecondsToDeadline / 60_000).toFixed(1)}m to deadline; `
+    + `news=${context.intelligenceFeed.status}; stable=${planStable}`
+  );
+  if (executionDecision.action !== 'commit') {
+    console.log('[EXECUTE] Holding changes until a safe qualified commit window.\n');
+    return;
+  }
 
   if (transferPlan.length > 0) {
-    console.log(`[EXECUTE] Optimized ${optimizedPlan.horizon}-GW plan: ${transferPlan.length} move(s), net gain ${optimizedPlan.netGain.toFixed(1)} xP`);
+    console.log(`[EXECUTE] Optimized ${optimizedPlan.horizon}-GW ${optimizedPlan.mode} in ${context.rankPolicy.mode} mode: ${transferPlan.length} move(s), net gain ${optimizedPlan.netGain.toFixed(1)} xP, template protection ${optimizedPlan.templateProtectionGain.toFixed(2)}, rank utility ${optimizedPlan.rankUtilityGain.toFixed(2)}`);
     for (const transfer of transferPlan) {
       console.log(`  - ${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`);
     }
@@ -368,7 +517,8 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
       hitCost,
       context.freeTransfers,
       transferPlan.length,
-      optimizedPlan.confidence
+      optimizedPlan.confidence,
+      hasUnlimitedTransfers(context.myTeam!)
     );
     const llmReview = await reviewTransferPlanWithLlm(context, optimizedPlan);
     const llmAllowed = llmReviewAllowsMutation(llmReview);
@@ -378,8 +528,17 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
     
     console.log(`  Validation: ${validation.allowed ? 'APPROVED' : 'BLOCKED'} - ${validation.reason}`);
     console.log(`  LLM review: ${llmReviewSummary(llmReview)}`);
-    
-    if (validation.allowed) {
+    const transferExecutionDecision = decideCurrentDeadlineExecution(
+      context,
+      validation.allowed && !optimizedPlan.blockedReason,
+      planStable,
+      priceTrigger
+    );
+    console.log(
+      `  Commit gate: ${transferExecutionDecision.action.toUpperCase()} - ${transferExecutionDecision.reason}`
+    );
+
+    if (validation.allowed && transferExecutionDecision.action === 'commit') {
       const actionKey = `transfer:${context.season}:${context.gameweek}:cycle-${runnerState.cycleCount}`;
       const transferSummary = transferPlan
         .map(transfer => `${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`)
@@ -393,6 +552,7 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
         summary: transferSummary,
         details: {
           'Net gain': `${optimizedPlan.netGain.toFixed(1)} xP`,
+          'Template protection': optimizedPlan.templateProtectionGain.toFixed(2),
           'Hit cost': hitCost,
           Confidence: `${Math.round(optimizedPlan.confidence * 100)}%`,
           'LLM review': llmReviewSummary(llmReview),
@@ -429,7 +589,7 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
                 playerIn: transfer.playerIn.web_name,
               })),
             }),
-            reasoning: `${optimizedPlan.horizon}-GW full-squad optimization; net gain ${optimizedPlan.netGain.toFixed(1)} xP; LLM ${llmReviewSummary(llmReview)}`,
+            reasoning: `${optimizedPlan.horizon}-GW full-squad optimization; net gain ${optimizedPlan.netGain.toFixed(1)} xP; template protection ${optimizedPlan.templateProtectionGain.toFixed(2)}; rank utility ${optimizedPlan.rankUtilityGain.toFixed(2)}; LLM ${llmReviewSummary(llmReview)}`,
             expectedPoints: totalXPGain,
             hitsTaken: hitCost / 4,
             createdAt: new Date(),
@@ -485,13 +645,16 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
       }
     } else {
       // Log the decision even if not executed
+      const heldReason = validation.allowed
+        ? `Deadline execution policy held: ${transferExecutionDecision.reason}`
+        : validation.reason;
       await logDecision({
         season: context.season,
         managerId: context.managerId,
         gameweek: context.gameweek,
         decisionType: 'transfer',
         action: transferPlan.map(transfer => `${transfer.playerOut.web_name} -> ${transfer.playerIn.web_name}`).join(', '),
-        reasoning: validation.reason,
+        reasoning: heldReason,
         expectedPoints: totalXPGain,
         hitsTaken: hitCost / 4,
         createdAt: new Date(),
@@ -500,10 +663,17 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
   } else {
     console.log('[EXECUTE] No transfer candidates found.\n');
   }
+
+  // A qualified economic move may be made early, but lineup, captain and chip
+  // choices continue to wait for the final news window.
+  if (executionDecision.phase === 'early-price') {
+    console.log('[EXECUTE] Early-price phase complete; lineup remains uncommitted.\n');
+    return;
+  }
   
   const client = getFPLClient();
   const latestTeam = await client.getMyTeam();
-  const lineup = await selectOptimalLineup(latestTeam);
+  const lineup = await selectOptimalLineup(latestTeam, context.rankPolicy);
   const activeChip = getActiveLineupChip(latestTeam);
   const chipRecommendations = activeChip ? [] : await evaluateChips(latestTeam, context.gameweek, lineup);
   const supportedChip = chipRecommendations.find(chip =>
@@ -533,7 +703,20 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
     : null;
   const lineupLlmAllowed = lineupLlmReview ? llmReviewAllowsMutation(lineupLlmReview) : true;
   if (lineupLlmReview) console.log(`[LLM] Lineup review: ${llmReviewSummary(lineupLlmReview)}`);
-  if (lineupPermission.allowed && lineupLlmAllowed && (getMutationPermission('lineup').allowed || (!changed && newChip))) {
+  const lineupMutationAllowed = getMutationPermission('lineup').allowed || (!changed && Boolean(newChip));
+  const lineupPlanReady = lineupPermission.allowed && lineupLlmAllowed && lineupMutationAllowed;
+  const lineupExecutionDecision = decideCurrentDeadlineExecution(
+    context,
+    lineupPlanReady,
+    true,
+    null
+  );
+  if (changed || newChip) {
+    console.log(
+      `[TIMING] Lineup commit gate: ${lineupExecutionDecision.action.toUpperCase()} - ${lineupExecutionDecision.reason}`
+    );
+  }
+  if (lineupPlanReady && lineupExecutionDecision.action === 'commit') {
 
     if (changed || newChip) {
       const action = newChip ? 'chip' : 'lineup';
@@ -633,7 +816,9 @@ async function runExecutePhase(context: DecisionContext): Promise<void> {
       ? lineupPermission.reason
       : !lineupLlmAllowed
         ? `LLM review did not approve: ${llmReviewSummary(lineupLlmReview!)}`
-        : 'Lineup mutation permission is disabled';
+        : !lineupMutationAllowed
+          ? 'Lineup mutation permission is disabled'
+          : `Deadline execution policy held: ${lineupExecutionDecision.reason}`;
     console.log(`[EXECUTE] Lineup mutation blocked: ${reason}.`);
   }
 }
@@ -889,7 +1074,16 @@ async function nextPollInterval(): Promise<number> {
   const deadline = (await getOptimizationEngine()).getNextDeadline()?.deadline;
   if (!deadline) return POLL_INTERVAL;
   const remaining = deadline.getTime() - Date.now();
-  return remaining > 0 && remaining <= DEADLINE_NEWS_WINDOW ? DEADLINE_NEWS_POLL_INTERVAL : POLL_INTERVAL;
+  if (remaining > 0 && remaining <= DEADLINE_NEWS_WINDOW) {
+    if (remaining > FINALIZATION_WINDOW) {
+      return Math.min(
+        DEADLINE_NEWS_POLL_INTERVAL,
+        Math.max(1_000, remaining - FINALIZATION_WINDOW)
+      );
+    }
+    return DEADLINE_NEWS_POLL_INTERVAL;
+  }
+  return POLL_INTERVAL;
 }
 
 async function main(): Promise<void> {

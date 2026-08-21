@@ -183,6 +183,7 @@ function buildRequestBody(
   if (config.mode === 'text') {
     return { ...base, type: 'text', text: { body, preview_url: false } };
   }
+  const templateParameter = formatTemplateParameter(body);
   return {
     ...base,
     type: 'template',
@@ -194,11 +195,21 @@ function buildRequestBody(
         parameters: [{
           type: 'text',
           parameter_name: config.templateParameterName,
-          text: body,
+          text: templateParameter,
         }],
       }],
     },
   };
+}
+
+// Meta template parameter values reject line breaks, tabs, and runs of more
+// than four spaces. Keep the detailed layout in text mode while giving the
+// approved single-variable template a readable, provider-safe value.
+function formatTemplateParameter(body: string): string {
+  return body
+    .replace(/[\r\n\t\u2028\u2029]+/g, ' · ')
+    .replace(/ {2,}/g, ' ')
+    .trim();
 }
 
 function callbackData(update: KapsoWhatsAppUpdate): string {

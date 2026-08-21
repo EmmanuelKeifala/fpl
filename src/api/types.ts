@@ -146,6 +146,14 @@ export interface Player {
   second_name: string;
   selected_by_percent: string;
   price_change_percent?: string;
+  price_change_calibrating?: boolean;
+  price_change_hourly_rate?: number;
+  price_change_locked_until?: string | null;
+  price_change_projections?: {
+    offset: number;
+    projected_percent: string;
+    likelihood: number;
+  }[];
   special: boolean;
   squad_number: null;
   status: string;  // 'a' = available, 'i' = injured, etc.

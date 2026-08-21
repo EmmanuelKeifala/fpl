@@ -100,6 +100,10 @@ class LiveFeatureSidecarTest(unittest.TestCase):
         self.assertEqual(sidecar["feature_count"], 96)
         self.assertEqual(sidecar["latest_included_gameweek"], 1)
         self.assertEqual(len(sidecar["rows"]), 3)
+        self.assertEqual(
+            sidecar["player_roster_sha256"],
+            "f19e17d35c8c69334ad7600975b995ac3af36a3d20a4bfb72867f2a0e8c413bb",
+        )
 
         prior_row = next(row for row in sidecar["rows"] if row["player_id"] == 1)
         features = dict(zip(sidecar["feature_names"], prior_row["features"]))
@@ -115,6 +119,25 @@ class LiveFeatureSidecarTest(unittest.TestCase):
         self.assertEqual(cold["known_price_m"], 7.0)
         self.assertEqual(cold["price_cold_start"], 1.0)
         self.assertEqual(cold["history_sample_count_std"], 0.0)
+
+    def test_player_roster_fingerprint_is_order_independent_and_tracks_metadata(self) -> None:
+        bootstrap, fixtures, summaries = fixture_payload()
+        expected = self.build(bootstrap, fixtures, summaries)
+
+        reordered = copy.deepcopy(bootstrap)
+        reordered["elements"].reverse()
+        actual = self.build(reordered, fixtures, summaries)
+        self.assertEqual(
+            actual["player_roster_sha256"], expected["player_roster_sha256"]
+        )
+
+        changed = copy.deepcopy(bootstrap)
+        changed["elements"][2]["element_type"] = 3
+        changed_sidecar = self.build(changed, fixtures, summaries)
+        self.assertNotEqual(
+            changed_sidecar["player_roster_sha256"],
+            expected["player_roster_sha256"],
+        )
 
     def test_current_bootstrap_aggregates_and_target_outcomes_cannot_change_features(self) -> None:
         bootstrap, fixtures, summaries = fixture_payload()

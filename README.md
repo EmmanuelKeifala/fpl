@@ -64,9 +64,16 @@ npm run auto
 Do not set `FPL_RUN_MODE=live` merely to test the worker. Live mode requires an
 explicit expected manager ID, a remote alert channel, the relevant per-action
 flag, a clear emergency stop, an authoritative deadline outside the safety
-margin, an unchanged team fingerprint, a single process/mutation lock, and
-confidence/gain gates. Every POST is persisted before execution and reconciled
-against `/my-team/`; an ambiguous outcome quarantines subsequent actions.
+margin, a fresh verified news feed, an unchanged team fingerprint, a single
+process/mutation lock, and confidence/gain gates. Every POST is persisted before
+execution and reconciled against the final squad, bank, hit, transfer-count,
+and chip state; an ambiguous outcome quarantines subsequent actions.
+
+The planner derives protect, balanced, or push mode from rank, target, trend,
+and season stage. Differentials must remain close enough on expected points,
+clear a start-probability floor, and add modeled upside; low ownership alone is
+not value. Normal changes wait for the final news window, while a stable plan
+may execute early only to avoid a material high-confidence price move.
 
 Create `data/EMERGENCY_STOP` to stop mutations in a running process without
 restarting it. `EMERGENCY_STOP=true` remains the startup-level stop. The live
@@ -85,7 +92,24 @@ npm run mutations:resolve -- --id=<id> --status=confirmed --message="verified in
 `npm run health` reads the durable worker heartbeat. See
 `docs/deployment-readiness.md` before enabling any live action.
 
-### Render deployment
+### Local Docker deployment
+
+The preferred zero-hosting-bill path runs one hardened worker container on the
+local machine and bind-mounts `data/` for durable state:
+
+```bash
+touch data/EMERGENCY_STOP
+docker --context default compose up -d --build
+docker --context default compose logs --tail=200 worker
+```
+
+The Compose profile is locked to shadow mode with every mutation disabled. All
+Render worker features remain enabled with the same runtime configuration,
+including the local ML observer, OpenAI reviewer, and Kapso updates. See
+[`docs/local-docker.md`](docs/local-docker.md) for health checks, updates,
+backups, and external-service credential requirements.
+
+### Render deployment (optional)
 
 `render.yaml` provisions one Node background worker with a 1 GB persistent disk
 mounted at `data/`. The Blueprint deliberately deploys in shadow mode with the

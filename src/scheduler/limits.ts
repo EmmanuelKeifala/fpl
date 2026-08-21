@@ -8,6 +8,11 @@ export interface SafetyLimits {
   runMode: FplRunMode;
   expectedManagerId: number | null;
   maxTransfersPerWeek: number;
+  maxUnlimitedTransfers: number;
+  protectTemplateWeight: number;
+  templateCoreOwnershipThreshold: number;
+  minimumTemplateCorePlayers: number;
+  templateAnchorOwnershipThreshold: number;
   minXPGainForHit: number;
   maxTransferHitCost: number;
   minTransferConfidence: number;
@@ -26,6 +31,10 @@ export interface RunnerTimingConfig {
   preDeadlineHours: number;
   deadlineNewsWindowMs: number;
   deadlineNewsPollIntervalMs: number;
+  finalizationWindowMs: number;
+  intelligenceMaximumAgeMs: number;
+  minimumEarlyPriceConfidence: number;
+  minimumEarlyPriceValueLossTenths: number;
   maxConsecutiveCycleFailures: number;
 }
 
@@ -43,12 +52,17 @@ export function getSafetyLimits(env: NodeJS.ProcessEnv = process.env): SafetyLim
     runMode,
     expectedManagerId,
     maxTransfersPerWeek: optionalInteger(env, 'MAX_TRANSFERS_PER_WEEK', 1, 5, 1),
+    maxUnlimitedTransfers: optionalInteger(env, 'MAX_UNLIMITED_TRANSFERS', 1, 15, 15),
+    protectTemplateWeight: optionalNumber(env, 'PROTECT_TEMPLATE_WEIGHT', 0, 1, 0.2),
+    templateCoreOwnershipThreshold: optionalNumber(env, 'TEMPLATE_CORE_OWNERSHIP_THRESHOLD', 0, 100, 25),
+    minimumTemplateCorePlayers: optionalInteger(env, 'MIN_TEMPLATE_CORE_PLAYERS', 0, 15, 6),
+    templateAnchorOwnershipThreshold: optionalNumber(env, 'TEMPLATE_ANCHOR_OWNERSHIP_THRESHOLD', 0, 100, 60),
     minXPGainForHit: optionalNumber(env, 'MIN_XP_GAIN_FOR_HIT', 0, 50, 8),
     maxTransferHitCost,
     minTransferConfidence: optionalNumber(env, 'MIN_TRANSFER_CONFIDENCE', 0.5, 1, 0.8),
     minLineupGain: optionalNumber(env, 'MIN_LINEUP_GAIN', 0, 10, 0.5),
     minLineupConfidence: optionalNumber(env, 'MIN_LINEUP_CONFIDENCE', 0.5, 1, 0.7),
-    deadlineSafetyMinutes: optionalInteger(env, 'DEADLINE_SAFETY_MINUTES', 5, 60, 15),
+    deadlineSafetyMinutes: optionalInteger(env, 'DEADLINE_SAFETY_MINUTES', 2, 60, 3),
     autoExecuteTransfers: optionalBoolean(env, 'AUTO_EXECUTE_TRANSFERS', false),
     autoSetLineup: optionalBoolean(env, 'AUTO_SET_LINEUP', false),
     autoPlayChips: optionalBoolean(env, 'AUTO_PLAY_CHIPS', false),
@@ -61,15 +75,30 @@ export function getRunnerTimingConfig(env: NodeJS.ProcessEnv = process.env): Run
   const pollMinutes = optionalInteger(env, 'POLL_INTERVAL_MINUTES', 1, 180, 30);
   const preDeadlineHours = optionalInteger(env, 'PRE_DEADLINE_HOURS', 1, 24, 2);
   const newsWindowMinutes = optionalInteger(env, 'DEADLINE_NEWS_WINDOW_MINUTES', 15, 360, 90);
-  const newsPollMinutes = optionalInteger(env, 'DEADLINE_NEWS_POLL_MINUTES', 1, 60, 5);
+  const newsPollMinutes = optionalInteger(env, 'DEADLINE_NEWS_POLL_MINUTES', 1, 60, 1);
+  const finalizationMinutes = optionalInteger(env, 'FINALIZATION_WINDOW_MINUTES', 3, 30, 5);
+  const safetyMinutes = optionalInteger(env, 'DEADLINE_SAFETY_MINUTES', 2, 60, 3);
   if (newsPollMinutes >= newsWindowMinutes) {
     throw new Error('DEADLINE_NEWS_POLL_MINUTES must be shorter than DEADLINE_NEWS_WINDOW_MINUTES');
+  }
+  if (finalizationMinutes <= safetyMinutes) {
+    throw new Error('FINALIZATION_WINDOW_MINUTES must be greater than DEADLINE_SAFETY_MINUTES');
   }
   return {
     pollIntervalMs: pollMinutes * 60_000,
     preDeadlineHours,
     deadlineNewsWindowMs: newsWindowMinutes * 60_000,
     deadlineNewsPollIntervalMs: newsPollMinutes * 60_000,
+    finalizationWindowMs: finalizationMinutes * 60_000,
+    intelligenceMaximumAgeMs: optionalInteger(env, 'INTELLIGENCE_MAX_AGE_MINUTES', 1, 15, 2) * 60_000,
+    minimumEarlyPriceConfidence: optionalNumber(env, 'MIN_EARLY_PRICE_CONFIDENCE', 0.5, 1, 0.8),
+    minimumEarlyPriceValueLossTenths: optionalInteger(
+      env,
+      'MIN_EARLY_PRICE_VALUE_LOSS_TENTHS',
+      1,
+      5,
+      1
+    ),
     maxConsecutiveCycleFailures: optionalInteger(
       env,
       'MAX_CONSECUTIVE_CYCLE_FAILURES',
@@ -125,8 +154,8 @@ export function resetWeeklyTransfers(currentGameweek: number): void {
   }
 }
 
-export function canMakeTransfers(count = 1): boolean {
-  const limits = getSafetyLimits();
+export function canMakeTransfers(count = 1, env: NodeJS.ProcessEnv = process.env): boolean {
+  const limits = getSafetyLimits(env);
   if (!Number.isInteger(count) || count < 1) return false;
   if (transfersThisWeek + count > limits.maxTransfersPerWeek) {
     console.log(
@@ -156,15 +185,34 @@ export function validateTransfer(
   hitCost: number,
   freeTransfers: number,
   plannedTransfers = 1,
-  confidence = 1
+  confidence = 1,
+  unlimitedTransfers = false,
+  env: NodeJS.ProcessEnv = process.env,
+  fileExists: (path: string) => boolean = existsSync
 ): { allowed: boolean; reason: string } {
-  const permission = getMutationPermission('transfer');
+  const permission = getMutationPermission('transfer', env, fileExists);
   const limits = permission.limits;
   if (!permission.allowed) return { allowed: false, reason: permission.reason };
-  if (![xpGain, hitCost, confidence].every(Number.isFinite) || freeTransfers < 0) {
+  if (![xpGain, hitCost, confidence].every(Number.isFinite)
+    || freeTransfers < 0
+    || (!unlimitedTransfers && !Number.isFinite(freeTransfers))) {
     return { allowed: false, reason: 'Transfer plan contains non-finite safety inputs' };
   }
-  if (!Number.isInteger(plannedTransfers) || plannedTransfers < 1 || !canMakeTransfers(plannedTransfers)) {
+  if (!Number.isInteger(plannedTransfers) || plannedTransfers < 1) {
+    return { allowed: false, reason: 'Weekly transfer limit reached' };
+  }
+  if (unlimitedTransfers) {
+    if (freeTransfers !== Number.POSITIVE_INFINITY) {
+      return { allowed: false, reason: 'Unlimited transfer plan requires explicit unlimited FPL status' };
+    }
+    if (plannedTransfers > limits.maxUnlimitedTransfers) {
+      return {
+        allowed: false,
+        reason: `Unlimited transfer plan has ${plannedTransfers} moves; maximum is ${limits.maxUnlimitedTransfers}`,
+      };
+    }
+    if (hitCost !== 0) return { allowed: false, reason: 'Unlimited transfer plan must have zero hit cost' };
+  } else if (!canMakeTransfers(plannedTransfers, env)) {
     return { allowed: false, reason: 'Weekly transfer limit reached' };
   }
   if (confidence < limits.minTransferConfidence) {
@@ -178,7 +226,9 @@ export function validateTransfer(
   }
 
   const netGain = xpGain - hitCost;
-  if (netGain <= 0) return { allowed: false, reason: `Non-positive net gain: ${netGain.toFixed(1)}` };
+  if (netGain < 0 || (!unlimitedTransfers && netGain === 0)) {
+    return { allowed: false, reason: `Non-positive net gain: ${netGain.toFixed(1)}` };
+  }
   if (hitCost > 0 && netGain < limits.minXPGainForHit) {
     return {
       allowed: false,

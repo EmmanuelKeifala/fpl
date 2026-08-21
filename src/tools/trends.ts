@@ -74,10 +74,10 @@ export const getTrendsTool = tool({
     
     if (category === 'template' || category === 'all') {
       // Template = most owned players by position
-      const topGK = engine.getTopPlayersByPosition(1, 2);
-      const topDEF = engine.getTopPlayersByPosition(2, 5);
-      const topMID = engine.getTopPlayersByPosition(3, 5);
-      const topFWD = engine.getTopPlayersByPosition(4, 3);
+      const topGK = engine.getMostOwnedPlayersByPosition(1, 2);
+      const topDEF = engine.getMostOwnedPlayersByPosition(2, 5);
+      const topMID = engine.getMostOwnedPlayersByPosition(3, 5);
+      const topFWD = engine.getMostOwnedPlayersByPosition(4, 3);
       
       results.template = {
         description: 'Most popular template picks by position',

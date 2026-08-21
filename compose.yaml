@@ -1,0 +1,75 @@
+name: fpl-agent-local
+
+services:
+  worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: fpl-agent:local
+    init: true
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      NODE_ENV: production
+      FPL_RUN_MODE: shadow
+      EMERGENCY_STOP: "true"
+      AUTO_EXECUTE_TRANSFERS: "false"
+      AUTO_SET_LINEUP: "false"
+      AUTO_PLAY_CHIPS: "false"
+      FPL_DB_PATH: /app/data/fpl.db
+      FPL_SESSION_FILE: /app/data/fpl-session.json
+      FPL_HEALTH_PATH: /app/data/runner-health.json
+      FPL_RUNNER_LOCK_PATH: /app/data/fpl-runner.lock
+      FPL_MUTATION_LOCK_PATH: /app/data/fpl-mutation.lock
+      FPL_DB_LOCK_PATH: /app/data/fpl.db.lock
+      FPL_EMERGENCY_STOP_FILE: /app/data/EMERGENCY_STOP
+      FPL_ML_SHADOW_ENABLED: "${LOCAL_FPL_ML_SHADOW_ENABLED:-true}"
+      FPL_ML_AUTO_FEATURES: "${LOCAL_FPL_ML_AUTO_FEATURES:-true}"
+      FPL_ML_MODEL_PATH: /app/artifacts/ml/player-fixture-v1/model.json
+      FPL_ML_FEATURE_DIRECTORY: /app/data/live/player-fixture-features-v1
+      FPL_ML_FEATURE_SCRIPT: /app/scripts/ml/live_features.py
+      FPL_ML_FEATURE_TIMEOUT_SECONDS: "600"
+      POLL_INTERVAL_MINUTES: "30"
+      DEADLINE_NEWS_WINDOW_MINUTES: "90"
+      DEADLINE_NEWS_POLL_MINUTES: "1"
+      FINALIZATION_WINDOW_MINUTES: "5"
+      DEADLINE_SAFETY_MINUTES: "3"
+      INTELLIGENCE_MAX_AGE_MINUTES: "2"
+      MIN_EARLY_PRICE_CONFIDENCE: "0.80"
+      MIN_EARLY_PRICE_VALUE_LOSS_TENTHS: "1"
+      MAX_CONSECUTIVE_CYCLE_FAILURES: "3"
+      MAX_UNLIMITED_TRANSFERS: "15"
+      PROTECT_TEMPLATE_WEIGHT: "0.20"
+      TEMPLATE_CORE_OWNERSHIP_THRESHOLD: "25"
+      MIN_TEMPLATE_CORE_PLAYERS: "6"
+      TEMPLATE_ANCHOR_OWNERSHIP_THRESHOLD: "60"
+      FPL_LLM_ENABLED: "true"
+      FPL_LLM_REQUIRED_FOR_LIVE: "true"
+      FPL_LLM_MODEL: gpt-5.4-nano
+      FPL_LLM_CACHE_DIR: /app/data/llm-cache
+      FPL_LLM_TIMEOUT_SECONDS: "30"
+      FPL_LLM_MIN_CONFIDENCE: "0.75"
+      KAPSO_WHATSAPP_ENABLED: "true"
+      KAPSO_WHATSAPP_MODE: template
+      KAPSO_WHATSAPP_LANGUAGE: en_US
+      KAPSO_WHATSAPP_TEMPLATE_PARAMETER_NAME: update
+      KAPSO_WHATSAPP_TIMEOUT_SECONDS: "8"
+      KAPSO_WHATSAPP_MAX_ATTEMPTS: "3"
+    volumes:
+      - ./data:/app/data
+    read_only: true
+    tmpfs:
+      - /tmp:size=64m,mode=1777
+    stop_grace_period: 90s
+    healthcheck:
+      test: ["CMD", "node", "dist/scheduler/health-check.js"]
+      interval: 1m
+      timeout: 10s
+      retries: 3
+      start_period: 5m
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "5"

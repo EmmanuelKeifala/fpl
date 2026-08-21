@@ -14,6 +14,17 @@ export interface ExpectedPoints {
   nextGW: number;
   next5GW: number;
   confidence: number; // 0-1
+  availability: {
+    appearanceProbability: number;
+    startProbability: number;
+    zeroMinuteProbability: number;
+  };
+  distribution: {
+    p10: number;
+    p50: number;
+    p90: number;
+    haulProbability: number;
+  };
   breakdown: {
     formFactor: number;
     fixtureFactor: number;
@@ -138,7 +149,13 @@ class OptimizationEngine {
     const officialRoleSignal = Number.isFinite(officialExpectedPoints)
       ? Math.max(0.05, Math.min(1, officialExpectedPoints / 4))
       : 0.5;
-    const roleEvidence = Math.min(1, inferredAppearances / 20);
+    const historicalRoleEvidence = Math.min(1, inferredAppearances / 20);
+    // Before GW1, bootstrap totals describe the previous season. Preserve them
+    // as a useful prior, but leave meaningful weight for the official current-
+    // season projection so an old minutes total cannot become role certainty.
+    const roleEvidence = completedGameweeks === 0
+      ? historicalRoleEvidence * 0.65
+      : historicalRoleEvidence;
     const eventDenominator = completedGameweeks > 0 ? completedGameweeks : 38;
     const historicalAppearanceRate = Math.min(1, inferredAppearances / eventDenominator);
     const roleAppearanceProbability = completedGameweeks > 0
@@ -155,7 +172,13 @@ class OptimizationEngine {
     const healthyExpectedMinutes = Math.max(0, Math.min(90, seasonExpectedMinutes));
     const newsSignal = this.newsSignals.get(player.id);
     const newsMultiplier = newsSignal?.minutesMultiplier ?? 1;
-    const expectedMinutes = healthyExpectedMinutes * newsMultiplier;
+    // Minutes here are conditional on appearing. Availability is applied once
+    // below through appearanceProbability; multiplying both values by a 50%
+    // flag would turn a genuine 50/50 call into an accidental 25% projection.
+    const expectedMinutes = Math.max(
+      healthyExpectedMinutes * newsMultiplier,
+      newsSignal?.confirmedLineup ? (newsSignal.expectedMinutesFloor ?? 0) : 0
+    );
     const minutesFactor = expectedMinutes / 90;
     // Before GW1, bootstrap carries prior-season totals. They are useful priors,
     // but must not be treated as fully observed current-season evidence.
@@ -181,12 +204,19 @@ class OptimizationEngine {
     }
     
     const nextFixtures = this.getUpcomingFixtures(player.team, 1);
-    const availabilityProbability = player.status === 'a'
+    const baselineAvailabilityProbability = player.status === 'a'
       ? ((player.chance_of_playing_next_round ?? 100) / 100)
       : ((player.chance_of_playing_next_round ?? 0) / 100);
-    const appearanceProbability = newsMultiplier === 0
+    const availabilityProbability = newsSignal?.availabilityProbability
+      ?? baselineAvailabilityProbability;
+    const roleAndAvailabilityProbability = roleAppearanceProbability * availabilityProbability;
+    const appearanceProbability = availabilityProbability === 0 || newsMultiplier === 0
       ? 0
-      : Math.max(0, Math.min(1, roleAppearanceProbability * availabilityProbability));
+      : Math.max(0, Math.min(1,
+        newsSignal?.confirmedLineup && newsSignal.type === 'expected-start'
+          ? Math.max(roleAndAvailabilityProbability, newsSignal.confidence * availabilityProbability)
+          : roleAndAvailabilityProbability
+      ));
     const goalRatePrior = [0, 0.01, 0.05, 0.22, 0.35][player.element_type] ?? 0.15;
     const assistRatePrior = [0, 0.01, 0.08, 0.18, 0.12][player.element_type] ?? 0.1;
     const seasonGoalsPer90 = (player.expected_goals_per_90 || 0) * rateReliability + goalRatePrior * (1 - rateReliability);
@@ -210,10 +240,10 @@ class OptimizationEngine {
     const defensiveActionsPer90 = rawDefensiveActionsPer90 * rateReliability
       + defensiveActionPrior * (1 - rateReliability);
     const defensiveContributionThreshold = player.element_type === 2 ? 10 : 12;
-    const defensiveContributionProbability = player.element_type === 1
+    const defensiveContributionProbabilityFor = (conditionalMinutes: number) => player.element_type === 1
       ? 0
       : poissonAtLeast(
-        defensiveActionsPer90 * (expectedMinutes / 90),
+        defensiveActionsPer90 * (conditionalMinutes / 90),
         defensiveContributionThreshold
       );
     const averageAttackHome = this.averageTeamStrength('strength_attack_home');
@@ -249,10 +279,14 @@ class OptimizationEngine {
         expectedGoalsConceded,
       };
     });
-    const toProjectionInput = (fixturesForProjection: Fixture[]) => ({
+    const toProjectionInput = (
+      fixturesForProjection: Fixture[],
+      conditionalMinutes: number,
+      fixtureAppearanceProbability: number
+    ) => ({
       elementType: player.element_type,
-      expectedMinutes,
-      appearanceProbability,
+      expectedMinutes: conditionalMinutes,
+      appearanceProbability: fixtureAppearanceProbability,
       expectedGoals: expectedGoalsPer90 * setpieceFactor,
       expectedAssists: expectedAssistsPer90 * setpieceFactor,
       cleanSheetProbability: 0,
@@ -265,32 +299,77 @@ class OptimizationEngine {
       redCardProbability,
       ownGoalProbability,
       expectedGoalsConceded: player.expected_goals_conceded_per_90 || player.goals_conceded_per_90 || 1,
-      defensiveContributionProbability,
+      defensiveContributionProbability: defensiveContributionProbabilityFor(conditionalMinutes),
       expectedBonus,
       rateReliability,
       fixtures: fixtureInputs(fixturesForProjection),
     });
-    const projection = projectPlayerPoints(toProjectionInput(upcomingFixtures));
-    const nextProjection = projectPlayerPoints(toProjectionInput(nextFixtures));
+    const nextEvent = nextFixtures[0]?.event ?? this.getNextDeadline()?.gameweek ?? this.currentGW;
+    const laterFixtures = upcomingFixtures.filter(fixture => fixture.event !== nextEvent);
+    const nextProjection = projectPlayerPoints(toProjectionInput(
+      nextFixtures,
+      expectedMinutes,
+      appearanceProbability
+    ));
+    // FPL's chance flag describes the next round. Do not silently carry the
+    // same doubt across the full planning horizon; later rounds regress to the
+    // player's healthy role unless a future-specific signal is available.
+    const futureProjection = projectPlayerPoints(toProjectionInput(
+      laterFixtures,
+      healthyExpectedMinutes,
+      roleAppearanceProbability
+    ));
     const calibrationAdjustment = -this.calibrationBias;
     const nextCalibrationAdjustment = nextFixtures.length > 0 ? calibrationAdjustment : 0;
     const projectedGameweeks = new Set(upcomingFixtures.map(fixture => fixture.event)).size;
     
-    const officialWeight = completedGameweeks === 0 && Number.isFinite(officialExpectedPoints) ? 0.65 : 0;
+    const officialWeight = completedGameweeks === 0 && Number.isFinite(officialExpectedPoints)
+      ? (newsSignal?.confirmedLineup ? 0.15 : 0.65)
+      : 0;
     const anchoredNextPoints = nextProjection.expectedPoints * (1 - officialWeight)
       + Math.max(0, officialExpectedPoints) * officialWeight;
-    const horizonRoleScale = officialWeight > 0 && nextProjection.expectedPoints > 0
-      ? Math.max(0.5, Math.min(1.5, anchoredNextPoints / nextProjection.expectedPoints))
-      : 1;
+    const fixtureCount = nextFixtures.length + laterFixtures.length;
+    const projectionConfidence = fixtureCount > 0
+      ? (
+        nextProjection.confidence * nextFixtures.length
+        + futureProjection.confidence * laterFixtures.length
+      ) / fixtureCount
+      : Math.max(nextProjection.confidence, futureProjection.confidence);
+    const horizonExpectedPoints = anchoredNextPoints + futureProjection.expectedPoints;
+    const nextExpectedPoints = Math.max(0, anchoredNextPoints + nextCalibrationAdjustment);
+    const conditionalStartProbability = Math.max(0, Math.min(1, (expectedMinutes - 15) / 60));
+    const startProbability = newsSignal?.confirmedLineup && newsSignal.type === 'expected-start'
+      ? Math.max(appearanceProbability * conditionalStartProbability, newsSignal.confidence)
+      : appearanceProbability * conditionalStartProbability;
+    const zeroMinuteProbability = 1 - appearanceProbability;
+    const volatilityByPosition = [0, 0.95, 1.05, 1.25, 1.3][player.element_type] ?? 1.15;
+    const standardDeviation = Math.sqrt(Math.max(1, nextExpectedPoints)) * volatilityByPosition;
+    const p10 = zeroMinuteProbability >= 0.1
+      ? 0
+      : Math.max(0, nextExpectedPoints - standardDeviation * 1.28);
+    const p90 = Math.max(nextExpectedPoints, nextExpectedPoints + standardDeviation * 1.28);
+    const haulProbability = appearanceProbability
+      * (1 / (1 + Math.exp(-(nextExpectedPoints - 8) / 2.5)));
 
     return {
       playerId: player.id,
       playerName: player.web_name,
       team: team?.short_name || 'UNK',
       position: positionName,
-      nextGW: Math.max(0, Math.round((anchoredNextPoints + nextCalibrationAdjustment) * 10) / 10),
-      next5GW: Math.max(0, Math.round((projection.expectedPoints * horizonRoleScale + calibrationAdjustment * projectedGameweeks) * 10) / 10),
-      confidence: projection.confidence,
+      nextGW: Math.round(nextExpectedPoints * 10) / 10,
+      next5GW: Math.max(0, Math.round((horizonExpectedPoints + calibrationAdjustment * projectedGameweeks) * 10) / 10),
+      confidence: Math.round(projectionConfidence * 10) / 10,
+      availability: {
+        appearanceProbability: Math.round(appearanceProbability * 100) / 100,
+        startProbability: Math.round(Math.max(0, Math.min(1, startProbability)) * 100) / 100,
+        zeroMinuteProbability: Math.round(Math.max(0, Math.min(1, zeroMinuteProbability)) * 100) / 100,
+      },
+      distribution: {
+        p10: Math.round(p10 * 10) / 10,
+        p50: Math.round(nextExpectedPoints * 10) / 10,
+        p90: Math.round(p90 * 10) / 10,
+        haulProbability: Math.round(haulProbability * 100) / 100,
+      },
       breakdown: {
         formFactor: Math.round(formFactor * 100) / 100,
         fixtureFactor: Math.round(fixtureFactor * 100) / 100,
@@ -299,7 +378,10 @@ class OptimizationEngine {
         rateReliability: Math.round(rateReliability * 100) / 100,
         calibrationAdjustment: Math.round(calibrationAdjustment * 100) / 100,
         setpieceFactor: Math.round(setpieceFactor * 100) / 100,
-        defensiveContribution: projection.breakdown.defensiveContribution,
+        defensiveContribution: Math.round((
+          nextProjection.breakdown.defensiveContribution
+          + futureProjection.breakdown.defensiveContribution
+        ) * 10) / 10,
         newsMultiplier,
         newsConfidence: newsSignal?.confidence ?? 0,
       },
@@ -624,11 +706,26 @@ class OptimizationEngine {
     return undefined;
   }
 
-  // Get top players by position
+  // Get top-scoring available players by position. Kept for callers that use
+  // the historical points-based ranking; market popularity should use
+  // getMostOwnedPlayersByPosition instead.
   getTopPlayersByPosition(position: number, count: number = 10): Player[] {
     return Array.from(this.players.values())
       .filter(p => p.element_type === position && p.status === 'a')
       .sort((a, b) => b.total_points - a.total_points)
+      .slice(0, count);
+  }
+
+  // Get the official FPL ownership leaders among available players.
+  getMostOwnedPlayersByPosition(position: number, count: number = 10): Player[] {
+    const ownership = (player: Player): number => {
+      const selectedByPercent = Number.parseFloat(player.selected_by_percent);
+      return Number.isFinite(selectedByPercent) ? selectedByPercent : 0;
+    };
+
+    return Array.from(this.players.values())
+      .filter(p => p.element_type === position && p.status === 'a')
+      .sort((a, b) => ownership(b) - ownership(a) || a.id - b.id)
       .slice(0, count);
   }
 
@@ -672,6 +769,7 @@ class OptimizationEngine {
     reasoning: string;
     netTransfers: number;
     transferVelocity: number; // transfers per hour estimate
+    source: 'official' | 'heuristic' | 'frozen';
   } {
     const player = this.players.get(playerId);
     if (!player) {
@@ -680,7 +778,14 @@ class OptimizationEngine {
 
     const completedGameweeks = this.gameweeks.filter(gameweek => gameweek.finished).length;
     const netTransfers = player.transfers_in_event - player.transfers_out_event;
-    if (completedGameweeks === 0) {
+    const firstDeadline = this.gameweeks
+      .map(gameweek => Date.parse(gameweek.deadline_time))
+      .filter(Number.isFinite)
+      .sort((left, right) => left - right)[0];
+    const pricesStillFrozen = firstDeadline === undefined
+      ? completedGameweeks === 0
+      : Date.now() < firstDeadline;
+    if (pricesStillFrozen) {
       return {
         player: player.web_name,
         currentPrice: `£${(player.now_cost / 10).toFixed(1)}m`,
@@ -689,18 +794,66 @@ class OptimizationEngine {
         reasoning: 'Prices are frozen until the GW1 deadline.',
         netTransfers,
         transferVelocity: 0,
+        source: 'frozen',
       };
     }
-    const officialChange = Number(player.price_change_percent);
-    if (Number.isFinite(officialChange) && officialChange !== 0) {
+    const lockedUntil = player.price_change_locked_until
+      ? Date.parse(player.price_change_locked_until)
+      : Number.NaN;
+    if (Number.isFinite(lockedUntil) && Date.now() < lockedUntil) {
       return {
         player: player.web_name,
         currentPrice: `£${(player.now_cost / 10).toFixed(1)}m`,
-        prediction: officialChange > 0 ? 'rise' : 'fall',
-        confidence: 0.8,
-        reasoning: `Official price-change indicator is ${officialChange.toFixed(1)}%.`,
+        prediction: 'stable',
+        confidence: 1,
+        reasoning: `Official price changes are locked until ${new Date(lockedUntil).toISOString()}.`,
         netTransfers,
-        transferVelocity: Math.round(netTransfers / 24),
+        transferVelocity: 0,
+        source: 'frozen',
+      };
+    }
+    const currentOfficialProgress = Number(player.price_change_percent);
+    const currentProjection = player.price_change_projections?.find(projection => projection.offset === 0);
+    const projectedOfficialProgress = Number(currentProjection?.projected_percent);
+    const officialProgress = Number.isFinite(projectedOfficialProgress)
+      && (!Number.isFinite(currentOfficialProgress)
+        || Math.abs(projectedOfficialProgress) > Math.abs(currentOfficialProgress))
+      ? projectedOfficialProgress
+      : currentOfficialProgress;
+    if (Number.isFinite(officialProgress)) {
+      if (player.price_change_calibrating === true) {
+        return {
+          player: player.web_name,
+          currentPrice: `£${(player.now_cost / 10).toFixed(1)}m`,
+          prediction: 'stable',
+          confidence: 0.5,
+          reasoning: 'Official price predictor is still calibrating.',
+          netTransfers,
+          transferVelocity: Number(player.price_change_hourly_rate) || 0,
+          source: 'official',
+        };
+      }
+      const thresholdCrossed = Math.abs(officialProgress) >= 100;
+      const prediction: 'rise' | 'fall' | 'stable' = thresholdCrossed
+        ? (officialProgress > 0 ? 'rise' : 'fall')
+        : 'stable';
+      const rawLikelihood = Number(currentProjection?.likelihood);
+      const normalizedLikelihood = Number.isFinite(rawLikelihood)
+        ? Math.max(0, Math.min(1, rawLikelihood > 1 ? rawLikelihood / 100 : rawLikelihood))
+        : 0;
+      return {
+        player: player.web_name,
+        currentPrice: `£${(player.now_cost / 10).toFixed(1)}m`,
+        prediction,
+        confidence: thresholdCrossed
+          ? Math.max(normalizedLikelihood, Math.min(0.98, 0.8 + (Math.abs(officialProgress) - 100) / 500))
+          : Math.max(0.5, normalizedLikelihood),
+        reasoning: thresholdCrossed
+          ? `Official price-change progress crossed the threshold at ${officialProgress.toFixed(1)}%.`
+          : `Official price-change progress is ${officialProgress.toFixed(1)}%; threshold not crossed.`,
+        netTransfers,
+        transferVelocity: Number(player.price_change_hourly_rate) || Math.round(netTransfers / 24),
+        source: 'official',
       };
     }
     const ownership = parseFloat(player.selected_by_percent) || 0;
@@ -750,6 +903,7 @@ class OptimizationEngine {
       reasoning,
       netTransfers,
       transferVelocity: Math.round(netTransfers / 24), // Per hour assuming GW event
+      source: 'heuristic',
     };
   }
 
@@ -850,6 +1004,7 @@ class OptimizationEngine {
       effectiveOwnership: number;
       differentialScore: number;
       isDGW: boolean;
+      elementType: number;
     }
 
     const candidates: CaptainCandidate[] = squadPlayerIds.map(id => {
@@ -880,15 +1035,20 @@ class OptimizationEngine {
         effectiveOwnership: eo.effectiveOwnership,
         differentialScore: Math.round(differentialScore * 10) / 10,
         isDGW,
+        elementType: player.element_type,
       };
     }).filter((c): c is CaptainCandidate => c !== null);
-    
-    // Sort by xP first, then use differential as tiebreaker
-    const sorted = candidates.sort((a: CaptainCandidate, b: CaptainCandidate) => {
-      const xpDiff = b.xpNextGW - a.xpNextGW;
-      if (Math.abs(xpDiff) > 0.5) return xpDiff;
-      return b.differentialScore - a.differentialScore;
-    });
+
+    const outfield = candidates.filter(candidate => candidate.elementType !== 1);
+    const captainPool = outfield.length >= 2 ? outfield : candidates;
+    // Keep the comparator transitive: projected points always lead, while the
+    // differential score is only a true tie-breaker. This prevents low-owned
+    // goalkeepers from leapfrogging higher-projected attackers.
+    const sorted = captainPool.sort((a: CaptainCandidate, b: CaptainCandidate) =>
+      b.xpNextGW - a.xpNextGW
+      || b.differentialScore - a.differentialScore
+      || a.id - b.id
+    );
     
     return sorted.slice(0, topN).map((c: CaptainCandidate, i: number) => ({
       rank: i + 1,
